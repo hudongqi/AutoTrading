@@ -31,7 +31,7 @@ class PerpPortfolio:
         self.maint_margin_rate = float(maint_margin_rate)
 
     # ---------- 估值相关 ----------
-    def unrealized_pnl(self, mark_price: float) -> float:
+    def unrealized_pnl(self, mark_price: float) -> float: # mark_price 当前价格
         st = self.state
         if st.position == 0:
             return 0.0
@@ -45,7 +45,7 @@ class PerpPortfolio:
 
     def margin_used(self, mark_price: float) -> float:
         # 占用保证金（简化）= 名义价值 / 杠杆
-        notional = abs(self.state.position) * float(mark_price)
+        notional = abs(self.state.position) * float(mark_price)  # 名义价值 notional = |仓位数量| × 当前价格
         return notional / self.leverage
 
     def free_margin(self, mark_price: float) -> float:
