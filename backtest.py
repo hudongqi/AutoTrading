@@ -31,34 +31,90 @@ class Backtester:
 
         self.cur_stop = None
         self.cur_take = None
+        self.entry_price = None
+        self.trail_start_atr = 1.5
 
-    def _set_brackets(self, entry_price: float, atr: float, side: int):
+    def _set_brackets(self, entry_price: float, atr: float, side: int,
+                      res7: float = np.nan, sup7: float = np.nan):
         if atr is None or np.isnan(atr) or atr <= 0:
             self.cur_stop, self.cur_take = None, None
             return
 
-        if side == 1:
-            self.cur_stop = entry_price - self.stop_atr * atr
-            self.cur_take = entry_price + self.take_atr * atr
-        else:
-            self.cur_stop = entry_price + self.stop_atr * atr
-            self.cur_take = entry_price - self.take_atr * atr
+        # 结构位缓冲：避免贴着压力/支撑放止损
+        struct_buf = 0.5 * atr
 
-    def _update_trailing_stop(self, close: float, atr: float, side: int): # 追踪止损
+        if side == 1:
+            # 1) 先算“距离止损/止盈”
+            stop_dist = entry_price - self.stop_atr * atr
+            take = entry_price + self.take_atr * atr
+
+            # 2) 再算“结构止损”（有 sup7 才启用）
+            if sup7 is not None and np.isfinite(sup7):
+                stop_struct = sup7 - struct_buf
+                # 多单止损：取更低的那个（更远、更不容易被洗）
+                stop = min(stop_dist, stop_struct)
+            else:
+                stop = stop_dist
+
+            self.cur_stop = float(stop)
+            self.cur_take = float(take)
+
+        else:
+            stop_dist = entry_price + self.stop_atr * atr
+            take = entry_price - self.take_atr * atr
+
+            if res7 is not None and np.isfinite(res7):
+                stop_struct = res7 + struct_buf
+                # 空单止损：取更高的那个（更远、更不容易被洗）
+                stop = max(stop_dist, stop_struct)
+            else:
+                stop = stop_dist
+
+            self.cur_stop = float(stop)
+            self.cur_take = float(take)
+
+    def _update_trailing_stop(self, close: float, atr: float, side: int,
+                              res7: float = np.nan, sup7: float = np.nan):
+
         if not self.use_trailing:
             return
         if self.cur_stop is None:
             return
+        if self.entry_price is None:
+            return
         if atr is None or np.isnan(atr) or atr <= 0:
             return
 
+        # ===== 盈利阈值判断（核心改造）=====
+        profit = (close - self.entry_price) if side == 1 else (self.entry_price - close)
+
+        # 未达到启动追踪止损条件 -> 不更新 stop
+        if profit < self.trail_start_atr * atr:
+            return
+
+
+        # ===== 开始追踪 =====
+        struct_buf = 0.5 * atr  # 结构缓冲（可参数化）
+
         if side == 1:
-            # 多头：止损只上移
+            # 多头追踪
             new_stop = close - self.stop_atr * atr
+
+            # 不允许止损推回支撑位之上（避免回踩扫）
+            if np.isfinite(sup7):
+                new_stop = min(new_stop, sup7 - struct_buf)
+
+            # 只允许向盈利方向移动
             self.cur_stop = max(self.cur_stop, new_stop)
+
         else:
-            # 空头：止损只下移（数值更小更有利）
+            # 空头追踪
             new_stop = close + self.stop_atr * atr
+
+            # 不允许止损推回压力位之下
+            if np.isfinite(res7):
+                new_stop = max(new_stop, res7 + struct_buf)
+
             self.cur_stop = min(self.cur_stop, new_stop)
 
     def _close_position(self, exit_mid_price: float, reason: str) -> dict:
@@ -75,6 +131,7 @@ class Backtester:
 
         # 平仓后清空风控线
         self.cur_stop, self.cur_take = None, None
+        self.entry_price = None
 
         return {"exit_reason": reason, "exit_price": float(fill)}
 
@@ -150,19 +207,30 @@ class Backtester:
                     fill = self.broker.fill_price(close, order_qty)
                     self.portfolio.apply_fill(fill_price=fill, qty=order_qty, is_maker=False)
 
-                    # 成交后如果有仓位，设置止损止盈（以成交价为基准）
                     st = self.portfolio.state
                     if st.position != 0:
+                        self.entry_price = float(fill)  # ✅ 记录入场价（用于 trailing 启用判断）
+
                         side = 1 if st.position > 0 else -1
-                        self._set_brackets(entry_price=float(fill), atr=atr, side=side)
+                        res7 = float(row.get("resistance_7d", np.nan))
+                        sup7 = float(row.get("support_7d", np.nan))
+                        self._set_brackets(entry_price=float(fill), atr=atr, side=side, res7=res7, sup7=sup7)
                     else:
                         self.cur_stop, self.cur_take = None, None
+                        self.entry_price = None  # ✅
 
             # ========== C) 持仓期间追踪止损 ==========
+            trailing_active = False
             st = self.portfolio.state
-            if st.position != 0:
+            if st.position != 0 and self.entry_price is not None and pd.notna(atr) and atr > 0:
                 side = 1 if st.position > 0 else -1
-                self._update_trailing_stop(close=close, atr=atr, side=side)
+                profit = (close - self.entry_price) if side == 1 else (self.entry_price - close)
+                trailing_active = profit >= self.trail_start_atr * atr
+
+                if trailing_active:
+                    res7 = float(row.get("resistance_7d", np.nan))
+                    sup7 = float(row.get("support_7d", np.nan))
+                    self._update_trailing_stop(close=close, atr=atr, side=side, res7=res7, sup7=sup7)
 
             # ========== D) 记录快照 ==========
             st = self.portfolio.state
@@ -198,6 +266,7 @@ class Backtester:
                 "exit_reason": exit_reason,
                 "exit_price": exit_price,
                 "liq_risk": self.portfolio.is_liquidation_risk(close),
+                "trailing_active": trailing_active,
             })
 
         out = pd.DataFrame(rows).set_index("time")

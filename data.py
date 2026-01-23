@@ -39,5 +39,6 @@ class CCXTDataSource:
 
         df["time"] = pd.to_datetime(df["ts"], unit="ms", utc=True)
         df = df.set_index("time").drop(columns=["ts"])
+        df = df[df.index <= end]
 
         return df.sort_index()
