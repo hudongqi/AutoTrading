@@ -27,9 +27,9 @@ def main():
     bt = Backtester(
         portfolio=portfolio,
         broker=broker,
-        max_pos=0.1,  # 比如 0.1 BTC
+        max_pos=10,  # 比如 0.1 BTC
         stop_atr=2.0,
-        take_atr=3.0,
+        take_atr=4.0,
         use_trailing=True,
         check_liq=True
     )

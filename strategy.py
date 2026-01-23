@@ -3,10 +3,11 @@ import numpy as np
 
 class BTCPerpTrendStrategy1H:
 
-    def __init__(self, fast=20, slow=60, atr_period=14):
+    def __init__(self, fast=20, slow=60, atr_period=14,min_volatility=0.002):
         self.fast = fast
         self.slow = slow
         self.atr_period = atr_period
+        self.min_volatility = min_volatility
 
     @staticmethod
     def _atr(df, period):
@@ -34,9 +35,19 @@ class BTCPerpTrendStrategy1H:
 
         out["atr"] = self._atr(out, self.atr_period)
 
+        # ===== 波动率（归一化）=====
+        out["volatility"] = out["atr"] / out["close"]
+
+        # ===== 波动过滤 =====
+        out["vol_ok"] = out["volatility"] >= self.min_volatility
+
         out["signal"] = 0
-        out.loc[out["ma_fast"] > out["ma_slow"], "signal"] = 1
-        out.loc[out["ma_fast"] < out["ma_slow"], "signal"] = -1
+
+        long_cond = (out["ma_fast"] > out["ma_slow"]) & out["vol_ok"]
+        short_cond = (out["ma_fast"] < out["ma_slow"]) & out["vol_ok"]
+
+        out.loc[long_cond, "signal"] = 1
+        out.loc[short_cond, "signal"] = -1
 
         out["trade_signal"] = out["signal"].diff().fillna(0)
 

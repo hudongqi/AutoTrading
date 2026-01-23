@@ -14,7 +14,7 @@ class Backtester:
         self,
         portfolio,          # PerpPortfolio
         broker,             # SimBroker（仅滑点）
-        max_pos: float = 1.0,   # 目标仓位（BTC 数量），比如 0.1 / 1.0
+        max_pos: float = 0.5,   # 目标仓位（BTC 数量），比如 0.1 / 1.0
         stop_atr: float = 2.0,
         take_atr: float = 3.0,
         use_trailing: bool = True,
@@ -44,7 +44,7 @@ class Backtester:
             self.cur_stop = entry_price + self.stop_atr * atr
             self.cur_take = entry_price - self.take_atr * atr
 
-    def _update_trailing_stop(self, close: float, atr: float, side: int):
+    def _update_trailing_stop(self, close: float, atr: float, side: int): # 追踪止损
         if not self.use_trailing:
             return
         if self.cur_stop is None:
@@ -85,6 +85,7 @@ class Backtester:
             close = float(row["close"])
             high = float(row["high"])
             low = float(row["low"])
+            volatility = float(row["volatility"])
             atr = float(row["atr"]) if ("atr" in row and pd.notna(row["atr"])) else np.nan
 
             st = self.portfolio.state
@@ -104,7 +105,7 @@ class Backtester:
                 side = 1 if pos > 0 else -1
 
                 if side == 1:
-                    hit_stop = low <= self.cur_stop
+                    hit_stop = low <= self.cur_stop # 止损线
                     hit_take = high >= self.cur_take
 
                     # 同根同时触发：保守先止损
@@ -176,6 +177,7 @@ class Backtester:
                 "high": high,
                 "low": low,
                 "atr": atr,
+                # "volatility": volatility,
 
                 "cash": st.cash,
                 "position": st.position,
