@@ -3,7 +3,7 @@ import numpy as np
 
 class BTCPerpTrendStrategy1H:
 
-    def __init__(self, fast=20, slow=60, atr_period=14,min_volatility=0.002):
+    def __init__(self, fast=5, slow=15, atr_period=14,min_volatility=0.002):
         self.fast = fast
         self.slow = slow
         self.atr_period = atr_period
@@ -44,9 +44,11 @@ class BTCPerpTrendStrategy1H:
         out["vol_ok"] = out["volatility"] >= self.min_volatility
         #
         # # ===== 7天支撑/压力（1h = 168根）=====
-        # window = 7 * 24
-        # out["resistance_7d"] = out["high"].rolling(window, min_periods=window).max()
-        # out["support_7d"] = out["low"].rolling(window, min_periods=window).min()
+        WINDOW = 7 * 24
+        q = 0.975
+
+        out["resistance_7d"] = out["high"].rolling(WINDOW, min_periods=WINDOW).quantile(q)
+        out["support_7d"] = out["low"].rolling(WINDOW, min_periods=WINDOW).quantile(1 - q)
         #
         # # ===== 关键位缓冲（避免贴边交易）=====
         # # 可做成参数：self.level_buffer_atr = 0.3

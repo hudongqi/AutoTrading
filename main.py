@@ -11,7 +11,7 @@ def main():
     ds = CCXTDataSource()
     df = ds.load_ohlcv(SYMBOL, START, END)
 
-    strat = BTCPerpTrendStrategy1H(fast=7, slow=30)
+    strat = BTCPerpTrendStrategy1H(fast=5, slow=15)
     df_sig = strat.generate_signals(df)
 
     portfolio = PerpPortfolio(
