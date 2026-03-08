@@ -15,63 +15,68 @@ class Backtester:
         portfolio,          # PerpPortfolio
         broker,             # SimBroker（仅滑点）
         max_pos: float = 0.5,   # 目标仓位（BTC 数量），比如 0.1 / 1.0
-        stop_atr: float = 2.0,
-        take_atr: float = 3.0,
+        stop_atr: float = 1.2,  # 止损更近（高R关键）
+        take_R: float = 4.0,  # 以 risk 为基准的止盈倍数
+        trail_start_R: float = 1.0,  # >=1R 才启动追踪
+        trail_atr: float = 1.5,  # 追踪距离（可调）
         use_trailing: bool = True,
         check_liq: bool = True,  # 是否做简化爆仓检查
     ):
         self.portfolio = portfolio
         self.broker = broker
         self.max_pos = float(max_pos)
-
         self.stop_atr = float(stop_atr)
-        self.take_atr = float(take_atr)
+        self.take_R = float(take_R)
+        self.trail_start_R = float(trail_start_R)
+        self.trail_atr = float(trail_atr)
         self.use_trailing = bool(use_trailing)
         self.check_liq = bool(check_liq)
 
         self.cur_stop = None
         self.cur_take = None
         self.entry_price = None
-        self.trail_start_atr = 1.5
+        self.entry_risk = None
+
 
     def _set_brackets(self, entry_price: float, atr: float, side: int,
                       res7: float = np.nan, sup7: float = np.nan):
+
         if atr is None or np.isnan(atr) or atr <= 0:
             self.cur_stop, self.cur_take = None, None
             return
 
-        # 结构位缓冲：避免贴着压力/支撑放止损
-        struct_buf = 0.5 * atr
+        struct_buf = 0.25 * atr  # 缓冲缩小一点（更贴近结构 = 更高R）
 
         if side == 1:
-            # 1) 先算“距离止损/止盈”
-            stop_dist = entry_price - self.stop_atr * atr
-            take = entry_price + self.take_atr * atr
+            stop_atr = entry_price - self.stop_atr * atr
+            stop_struct = (sup7 - struct_buf) if np.isfinite(sup7) else -np.inf
 
-            # 2) 再算“结构止损”（有 sup7 才启用）
-            if sup7 is not None and np.isfinite(sup7):
-                stop_struct = sup7 - struct_buf
-                # 多单止损：取更低的那个（更远、更不容易被洗）
-                stop = min(stop_dist, stop_struct)
-            else:
-                stop = stop_dist
+            # ✅ 高R：取“更近”的止损（价格更高的那个）
+            stop = max(stop_atr, stop_struct)
 
-            self.cur_stop = float(stop)
-            self.cur_take = float(take)
+            risk = entry_price - stop
+            if risk <= 0:
+                self.cur_stop, self.cur_take = None, None
+                return
+
+            take = entry_price + self.take_R * risk
 
         else:
-            stop_dist = entry_price + self.stop_atr * atr
-            take = entry_price - self.take_atr * atr
+            stop_atr = entry_price + self.stop_atr * atr
+            stop_struct = (res7 + struct_buf) if np.isfinite(res7) else np.inf
 
-            if res7 is not None and np.isfinite(res7):
-                stop_struct = res7 + struct_buf
-                # 空单止损：取更高的那个（更远、更不容易被洗）
-                stop = max(stop_dist, stop_struct)
-            else:
-                stop = stop_dist
+            # ✅ 高R：取“更近”的止损（价格更低的那个）
+            stop = min(stop_atr, stop_struct)
 
-            self.cur_stop = float(stop)
-            self.cur_take = float(take)
+            risk = stop - entry_price
+            if risk <= 0:
+                self.cur_stop, self.cur_take = None, None
+                return
+
+            take = entry_price - self.take_R * risk
+
+        self.cur_stop = float(stop)
+        self.cur_take = float(take)
 
     def _update_trailing_stop(self, close: float, atr: float, side: int,
                               res7: float = np.nan, sup7: float = np.nan):
@@ -84,21 +89,20 @@ class Backtester:
             return
         if atr is None or np.isnan(atr) or atr <= 0:
             return
+        if self.entry_risk is None or self.entry_risk <= 0:
+            return
 
         # ===== 盈利阈值判断（核心改造）=====
         profit = (close - self.entry_price) if side == 1 else (self.entry_price - close)
-
-        # 未达到启动追踪止损条件 -> 不更新 stop
-        if profit < self.trail_start_atr * atr:
+        if profit < self.trail_start_R * self.entry_risk:
             return
-
 
         # ===== 开始追踪 =====
         struct_buf = 0.5 * atr  # 结构缓冲（可参数化）
 
         if side == 1:
             # 多头追踪
-            new_stop = close - self.stop_atr * atr
+            new_stop = close - self.trail_atr * atr
 
             # 不允许止损推回支撑位之上（避免回踩扫）
             if np.isfinite(sup7):
@@ -109,7 +113,7 @@ class Backtester:
 
         else:
             # 空头追踪
-            new_stop = close + self.stop_atr * atr
+            new_stop = close + self.trail_atr * atr
 
             # 不允许止损推回压力位之下
             if np.isfinite(res7):
@@ -132,6 +136,7 @@ class Backtester:
         # 平仓后清空风控线
         self.cur_stop, self.cur_take = None, None
         self.entry_price = None
+        self.entry_risk = None
 
         return {"exit_reason": reason, "exit_price": float(fill)}
 
@@ -215,9 +220,14 @@ class Backtester:
                         res7 = float(row.get("resistance_7d", np.nan))
                         sup7 = float(row.get("support_7d", np.nan))
                         self._set_brackets(entry_price=float(fill), atr=atr, side=side, res7=res7, sup7=sup7)
+                        if self.cur_stop is not None:
+                            self.entry_risk = abs(self.entry_price - self.cur_stop)
+                        else:
+                            self.entry_risk = None
                     else:
                         self.cur_stop, self.cur_take = None, None
                         self.entry_price = None  # ✅
+                        self.entry_risk = None
 
             # ========== C) 持仓期间追踪止损 ==========
             trailing_active = False
@@ -225,7 +235,10 @@ class Backtester:
             if st.position != 0 and self.entry_price is not None and pd.notna(atr) and atr > 0:
                 side = 1 if st.position > 0 else -1
                 profit = (close - self.entry_price) if side == 1 else (self.entry_price - close)
-                trailing_active = profit >= self.trail_start_atr * atr
+                trailing_active = (
+                    self.entry_risk is not None and self.entry_risk > 0 and
+                    profit >= self.trail_start_R * self.entry_risk
+                )
 
                 if trailing_active:
                     res7 = float(row.get("resistance_7d", np.nan))
