@@ -3,11 +3,13 @@ import numpy as np
 
 class BTCPerpTrendStrategy1H:
 
-    def __init__(self, fast=5, slow=15, atr_period=14,min_volatility=0.002):
+    def __init__(self, fast=5, slow=15, atr_period=14, min_volatility=0.005, fast_4h=5, slow_4h=15):
         self.fast = fast
         self.slow = slow
         self.atr_period = atr_period
         self.min_volatility = min_volatility
+        self.fast_4h = fast_4h
+        self.slow_4h = slow_4h
         self.trail_start_atr = 1.5  # 盈利达到 1.5 ATR 才启动 trailing
         self.entry_price = None
 
@@ -38,17 +40,30 @@ class BTCPerpTrendStrategy1H:
         out["atr"] = self._atr(out, self.atr_period)
 
         # ===== 波动率（归一化）=====
-        out["volatility"] = out["atr"] / out["close"]
+        out["atr_pct"] = out["atr"] / out["close"]
+        out["volatility"] = out["atr_pct"]
 
         # ===== 波动过滤 =====
-        out["vol_ok"] = out["volatility"] >= self.min_volatility
-        #
-        # # ===== 7天支撑/压力（1h = 168根）=====
+        out["vol_ok"] = out["atr_pct"] > self.min_volatility
+
+        # ===== 7天支撑/压力（1h = 168根）=====
         WINDOW = 7 * 24
         q = 0.975
 
         out["resistance_7d"] = out["high"].rolling(WINDOW, min_periods=WINDOW).quantile(q)
         out["support_7d"] = out["low"].rolling(WINDOW, min_periods=WINDOW).quantile(1 - q)
+
+        # ===== 4h 趋势过滤 =====
+        out_4h = out[["close"]].resample("4h").last().dropna()
+        out_4h["ma_fast_4h"] = out_4h["close"].rolling(self.fast_4h).mean()
+        out_4h["ma_slow_4h"] = out_4h["close"].rolling(self.slow_4h).mean()
+        out_4h["trend_4h"] = 0
+        out_4h.loc[out_4h["ma_fast_4h"] > out_4h["ma_slow_4h"], "trend_4h"] = 1
+        out_4h.loc[out_4h["ma_fast_4h"] < out_4h["ma_slow_4h"], "trend_4h"] = -1
+
+        out["ma_fast_4h"] = out_4h["ma_fast_4h"].reindex(out.index, method="ffill")
+        out["ma_slow_4h"] = out_4h["ma_slow_4h"].reindex(out.index, method="ffill")
+        out["trend_4h"] = out_4h["trend_4h"].reindex(out.index, method="ffill").fillna(0).astype(int)
         #
         # # ===== 关键位缓冲（避免贴边交易）=====
         # # 可做成参数：self.level_buffer_atr = 0.3
@@ -70,20 +85,28 @@ class BTCPerpTrendStrategy1H:
         # )
 
         out["signal"] = 0
-        long_trend = (out["ma_fast"] > out["ma_slow"]) & out["vol_ok"]
-        short_trend = (out["ma_fast"] < out["ma_slow"]) & out["vol_ok"]
+        long_cond = (
+            (out["ma_fast"] > out["ma_slow"]) &
+            (out["trend_4h"] == 1) &
+            (out["atr_pct"] > 0.005) &
+            (out["close"] > out["resistance_7d"])
+        )
+        short_cond = (
+            (out["ma_fast"] < out["ma_slow"]) &
+            (out["trend_4h"] == -1) &
+            (out["atr_pct"] > 0.005) &
+            (out["close"] < out["support_7d"])
+        )
 
-        # ✅ 只有趋势 + 关键位确认 同时满足，才允许给 signal
-
-        out.loc[long_trend , "signal"] = 1
-        out.loc[short_trend , "signal"] = -1
+        out.loc[long_cond, "signal"] = 1
+        out.loc[short_cond, "signal"] = -1
 
         # ===== 事件驱动：只在信号切换时交易 =====
         out["trade_signal"] = out["signal"].diff().fillna(0)
         out["trailing_active"] = False
 
-        print("long_trend true:", long_trend.mean())
-        print("short_trend true:", short_trend.mean())
+        print("long_cond true:", long_cond.mean())
+        print("short_cond true:", short_cond.mean())
         # print("long_level_ok true:", long_level_ok.mean())
         # print("short_level_ok true:", short_level_ok.mean())
 

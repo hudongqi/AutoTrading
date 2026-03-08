@@ -18,8 +18,8 @@ class Backtester:
         max_pos: float = 0.1,
         cooldown_bars: int = 3,
         stop_atr: float = 1.5,
-        take_R: float = 2.5,
-        trail_start_R: float = 1.2,
+        take_R: float = 3.5,
+        trail_start_R: float = 1.5,
         trail_atr: float = 2.0,
         use_trailing: bool = True,
         check_liq: bool = True,  # 是否做简化爆仓检查
