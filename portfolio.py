@@ -6,6 +6,7 @@ class PerpState:
     position: float = 0.0       # 合约数量（正=多，负=空；这里用“标的数量”，例如 BTC 数量）
     avg_price: float = 0.0      # 持仓均价
     realized_pnl: float = 0.0   # 已实现盈亏累计（USDT）
+    fee_paid: float = 0.0       # 累计手续费（USDT）
 
 class PerpPortfolio:
     """
@@ -97,7 +98,7 @@ class PerpPortfolio:
 
         return target_qty - self.state.position
 
-    def apply_fill(self, fill_price: float, qty: float, is_maker: bool = False) -> None:
+    def apply_fill(self, fill_price: float, qty: float, is_maker: bool = False) -> dict:
         """
         把一笔成交记到账户里（支持开仓/加仓/减仓/平仓/反手）
         - fill_price: 成交价
@@ -107,12 +108,13 @@ class PerpPortfolio:
         fill_price = float(fill_price)
         qty = float(qty)
         if qty == 0:
-            return
+            return {"fee": 0.0, "realized": 0.0}
 
         # 手续费按成交名义收取（简化：直接从 cash 扣）
         notional = fill_price * qty
         fee = self.commission(notional, is_maker=is_maker)
         st.cash -= fee
+        st.fee_paid += fee
 
         old_pos = st.position
         old_avg = st.avg_price
@@ -122,14 +124,14 @@ class PerpPortfolio:
         if old_pos == 0:
             st.position = new_pos
             st.avg_price = fill_price
-            return
+            return {"fee": fee, "realized": 0.0}
 
         # 2) 同方向加仓（old_pos 与 qty 同号）
         if (old_pos > 0 and qty > 0) or (old_pos < 0 and qty < 0):
             total_cost = old_avg * abs(old_pos) + fill_price * abs(qty)
             st.position = new_pos
             st.avg_price = total_cost / abs(new_pos)
-            return
+            return {"fee": fee, "realized": 0.0}
 
         # 3) 反方向交易：减仓 / 平仓 / 反手
         # 先计算此次成交中“平掉的数量”（绝对值）
@@ -152,14 +154,15 @@ class PerpPortfolio:
         # 3.1) 如果刚好平完（新仓位=0）
         if new_pos == 0:
             st.avg_price = 0.0
-            return
+            return {"fee": fee, "realized": realized}
 
         # 3.2) 如果反手（新仓位方向与旧仓位相反）
         # 反手后剩余那部分是“新开仓”，均价=本次成交价
         if (old_pos > 0 and new_pos < 0) or (old_pos < 0 and new_pos > 0):
             st.avg_price = fill_price
-            return
+            return {"fee": fee, "realized": realized}
 
         # 3.3) 否则是减仓但还在同方向（均价通常保持不变）
         # st.avg_price 保持 old_avg
         st.avg_price = old_avg
+        return {"fee": fee, "realized": realized}

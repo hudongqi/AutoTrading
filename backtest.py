@@ -37,6 +37,10 @@ class Backtester:
         self.entry_price = None
         self.entry_risk = None
 
+        self.trade_count = 0
+        self.reversal_count = 0
+        self.closed_trade_pnls = []
+
 
     def _set_brackets(self, entry_price: float, atr: float, side: int,
                       res7: float = np.nan, sup7: float = np.nan):
@@ -131,7 +135,10 @@ class Backtester:
         fill = self.broker.fill_price(exit_mid_price, qty_to_close)
 
         # 记账（手续费 + realized pnl 由 portfolio 处理）
-        self.portfolio.apply_fill(fill_price=fill, qty=qty_to_close, is_maker=False)
+        fill_info = self.portfolio.apply_fill(fill_price=fill, qty=qty_to_close, is_maker=False)
+        self.trade_count += 1
+        if fill_info and fill_info.get("realized", 0.0) != 0:
+            self.closed_trade_pnls.append(float(fill_info["realized"]))
 
         # 平仓后清空风控线
         self.cur_stop, self.cur_take = None, None
@@ -155,6 +162,9 @@ class Backtester:
 
             exit_reason = None
             exit_price = np.nan
+            bar_fee = 0.0
+            bar_order_qty = 0.0
+            bar_reversal = False
 
             # ========== (可选) 简化爆仓检查 ==========
             if self.check_liq and self.portfolio.is_liquidation_risk(close):
@@ -209,10 +219,20 @@ class Backtester:
                 order_qty = float(self.portfolio.target_position(target, close))
 
                 if order_qty != 0:
+                    prev_pos = float(self.portfolio.state.position)
                     fill = self.broker.fill_price(close, order_qty)
-                    self.portfolio.apply_fill(fill_price=fill, qty=order_qty, is_maker=False)
+                    fill_info = self.portfolio.apply_fill(fill_price=fill, qty=order_qty, is_maker=False)
+                    self.trade_count += 1
+                    bar_order_qty = float(order_qty)
+                    bar_fee += float(fill_info.get("fee", 0.0)) if fill_info else 0.0
+                    if fill_info and fill_info.get("realized", 0.0) != 0:
+                        self.closed_trade_pnls.append(float(fill_info["realized"]))
 
                     st = self.portfolio.state
+                    if prev_pos != 0 and st.position != 0 and (prev_pos * st.position < 0):
+                        self.reversal_count += 1
+                        bar_reversal = True
+
                     if st.position != 0:
                         self.entry_price = float(fill)  # ✅ 记录入场价（用于 trailing 启用判断）
 
@@ -264,6 +284,7 @@ class Backtester:
                 "position": st.position,
                 "avg_price": st.avg_price,
                 "realized_pnl": st.realized_pnl,
+                "fee_paid": st.fee_paid,
                 "unrealized_pnl": upnl,
                 "equity": eq,
 
@@ -275,6 +296,9 @@ class Backtester:
 
                 "signal": signal,
                 "trade_signal": trade_sig,
+                "order_qty": bar_order_qty,
+                "bar_fee": bar_fee,
+                "is_reversal": bar_reversal,
 
                 "exit_reason": exit_reason,
                 "exit_price": exit_price,
@@ -285,4 +309,18 @@ class Backtester:
         out = pd.DataFrame(rows).set_index("time")
         out["returns"] = out["equity"].pct_change().fillna(0)
         out["cum_returns"] = (1 + out["returns"]).cumprod()
+
+        wins = [p for p in self.closed_trade_pnls if p > 0]
+        losses = [p for p in self.closed_trade_pnls if p < 0]
+        win_rate = (len(wins) / len(self.closed_trade_pnls)) if self.closed_trade_pnls else 0.0
+        pnl_ratio = (np.mean(wins) / abs(np.mean(losses))) if wins and losses else np.nan
+
+        out.attrs["stats"] = {
+            "trade_count": int(self.trade_count),
+            "total_fees": float(self.portfolio.state.fee_paid),
+            "reversal_count": int(self.reversal_count),
+            "win_rate": float(win_rate),
+            "pnl_ratio": float(pnl_ratio) if pd.notna(pnl_ratio) else np.nan,
+        }
+
         return out
