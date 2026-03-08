@@ -30,7 +30,7 @@ def main():
         broker=broker,
         portfolio=portfolio,
         strategy=strat,
-        max_pos=0.1,
+        max_pos=0.15,
         cooldown_bars=3,
         stop_atr=1.5,
         take_R=3.5,
