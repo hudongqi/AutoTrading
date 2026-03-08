@@ -23,6 +23,8 @@ class Backtester:
         trail_atr: float = 2.0,
         use_trailing: bool = True,
         check_liq: bool = True,  # 是否做简化爆仓检查
+        entry_is_maker: bool = False,
+        funding_rate_per_8h: float = 0.0,
     ):
         self.broker = broker
         self.portfolio = portfolio
@@ -35,6 +37,8 @@ class Backtester:
         self.trail_atr = float(trail_atr)
         self.use_trailing = bool(use_trailing)
         self.check_liq = bool(check_liq)
+        self.entry_is_maker = bool(entry_is_maker)
+        self.funding_rate_per_8h = float(funding_rate_per_8h)
 
         self.cur_stop = None
         self.cur_take = None
@@ -263,7 +267,7 @@ class Backtester:
                         order_qty = float(self.portfolio.target_position(target, close))
                         if order_qty != 0:
                             fill = self.broker.fill_price(close, order_qty)
-                            fill_info = self.portfolio.apply_fill(fill_price=fill, qty=order_qty, is_maker=False)
+                            fill_info = self.portfolio.apply_fill(fill_price=fill, qty=order_qty, is_maker=self.entry_is_maker)
                             self.trade_count += 1
                             bar_order_qty = float(order_qty)
                             bar_fee += float(fill_info.get("fee", 0.0)) if fill_info else 0.0
@@ -290,7 +294,7 @@ class Backtester:
                         order_qty = float(self.portfolio.target_position(target, close))
                         if order_qty != 0:
                             fill = self.broker.fill_price(close, order_qty)
-                            fill_info = self.portfolio.apply_fill(fill_price=fill, qty=order_qty, is_maker=False)
+                            fill_info = self.portfolio.apply_fill(fill_price=fill, qty=order_qty, is_maker=self.entry_is_maker)
                             self.trade_count += 1
                             bar_order_qty = float(order_qty)
                             bar_fee += float(fill_info.get("fee", 0.0)) if fill_info else 0.0
@@ -303,6 +307,12 @@ class Backtester:
                                 sup7 = float(row.get("support_7d", np.nan))
                                 self._set_brackets(entry_price=float(fill), atr=atr, side=side, res7=res7, sup7=sup7)
                                 self.entry_risk = abs(self.entry_price - self.cur_stop) if self.cur_stop is not None else None
+
+            # ========== B2) Funding 成本/收益模拟 ==========
+            funding_cashflow = 0.0
+            if self.funding_rate_per_8h != 0.0:
+                funding_rate_bar = self.funding_rate_per_8h / 8.0  # 1h bar 折算
+                funding_cashflow = self.portfolio.apply_funding(mark_price=close, funding_rate=funding_rate_bar)
 
             # ========== C) 持仓期间追踪止损 ==========
             trailing_active = False
@@ -340,6 +350,8 @@ class Backtester:
                 "avg_price": st.avg_price,
                 "realized_pnl": st.realized_pnl,
                 "fee_paid": st.fee_paid,
+                "funding_total": st.funding_total,
+                "funding_cashflow": funding_cashflow,
                 "unrealized_pnl": upnl,
                 "equity": eq,
 
@@ -373,6 +385,7 @@ class Backtester:
         out.attrs["stats"] = {
             "trade_count": int(self.trade_count),
             "total_fees": float(self.portfolio.state.fee_paid),
+            "funding_total": float(self.portfolio.state.funding_total),
             "reversal_count": int(self.reversal_count),
             "win_rate": float(win_rate),
             "pnl_ratio": float(pnl_ratio) if pd.notna(pnl_ratio) else np.nan,

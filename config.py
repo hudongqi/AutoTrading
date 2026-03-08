@@ -12,4 +12,7 @@ TAKER_FEE_RATE = 0.0005
 MAKER_FEE_RATE_BNB = 0.00018
 TAKER_FEE_RATE_BNB = 0.00045
 
+# Funding 模拟参数（默认按 8 小时费率，1h K 线会自动折算到每根）
+FUNDING_RATE_PER_8H = 0.0001
+
 SLIPPAGE_BPS = 5            # 0.05%

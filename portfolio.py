@@ -7,6 +7,7 @@ class PerpState:
     avg_price: float = 0.0      # 持仓均价
     realized_pnl: float = 0.0   # 已实现盈亏累计（USDT）
     fee_paid: float = 0.0       # 累计手续费（USDT）
+    funding_total: float = 0.0  # 累计资金费（USDT，正=收到，负=支付）
 
 class PerpPortfolio:
     """
@@ -97,6 +98,27 @@ class PerpPortfolio:
                 target_qty = -max_abs
 
         return target_qty - self.state.position
+
+    def apply_funding(self, mark_price: float, funding_rate: float) -> float:
+        """
+        资金费结算（简化）：
+        funding_cashflow = - position * mark_price * funding_rate
+        - 多头(position>0)在 funding_rate>0 时支付（负值）
+        - 空头(position<0)在 funding_rate>0 时收取（正值）
+        返回本次资金费现金流（USDT）。
+        """
+        st = self.state
+        if st.position == 0:
+            return 0.0
+
+        funding_rate = float(funding_rate)
+        if funding_rate == 0.0:
+            return 0.0
+
+        cashflow = -st.position * float(mark_price) * funding_rate
+        st.cash += cashflow
+        st.funding_total += cashflow
+        return cashflow
 
     def apply_fill(self, fill_price: float, qty: float, is_maker: bool = False) -> dict:
         """
