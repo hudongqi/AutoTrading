@@ -12,9 +12,11 @@ class Backtester:
 
     def __init__(
         self,
-        portfolio,          # PerpPortfolio
         broker,             # SimBroker（仅滑点）
-        max_pos: float = 0.5,   # 目标仓位（BTC 数量），比如 0.1 / 1.0
+        portfolio,          # PerpPortfolio
+        strategy,           # strategy instance（A版先只透传，不改信号逻辑）
+        max_pos: float = 0.1,
+        cooldown_bars: int = 3,
         stop_atr: float = 1.2,  # 止损更近（高R关键）
         take_R: float = 4.0,  # 以 risk 为基准的止盈倍数
         trail_start_R: float = 1.0,  # >=1R 才启动追踪
@@ -22,9 +24,11 @@ class Backtester:
         use_trailing: bool = True,
         check_liq: bool = True,  # 是否做简化爆仓检查
     ):
-        self.portfolio = portfolio
         self.broker = broker
+        self.portfolio = portfolio
+        self.strategy = strategy
         self.max_pos = float(max_pos)
+        self.cooldown_bars = int(cooldown_bars)
         self.stop_atr = float(stop_atr)
         self.take_R = float(take_R)
         self.trail_start_R = float(trail_start_R)
@@ -149,8 +153,9 @@ class Backtester:
 
     def run(self, df_signals: pd.DataFrame) -> pd.DataFrame:
         rows = []
+        last_exit_idx = -999999
 
-        for ts, row in df_signals.iterrows():
+        for i, (ts, row) in enumerate(df_signals.iterrows()):
             close = float(row["close"])
             high = float(row["high"])
             low = float(row["low"])
@@ -170,6 +175,8 @@ class Backtester:
             if self.check_liq and self.portfolio.is_liquidation_risk(close):
                 evt = self._close_position(exit_mid_price=close, reason="LIQ")
                 exit_reason, exit_price = evt["exit_reason"], evt["exit_price"]
+                if exit_reason is not None:
+                    last_exit_idx = i
                 pos = float(self.portfolio.state.position)
 
             # ========== A) 先检查止损/止盈 ==========
@@ -184,9 +191,13 @@ class Backtester:
                     if hit_stop:
                         evt = self._close_position(exit_mid_price=self.cur_stop, reason="STOP")
                         exit_reason, exit_price = evt["exit_reason"], evt["exit_price"]
+                        if exit_reason is not None:
+                            last_exit_idx = i
                     elif hit_take:
                         evt = self._close_position(exit_mid_price=self.cur_take, reason="TAKE")
                         exit_reason, exit_price = evt["exit_reason"], evt["exit_price"]
+                        if exit_reason is not None:
+                            last_exit_idx = i
 
                 else:
                     hit_stop = high >= self.cur_stop
@@ -195,9 +206,13 @@ class Backtester:
                     if hit_stop:
                         evt = self._close_position(exit_mid_price=self.cur_stop, reason="STOP")
                         exit_reason, exit_price = evt["exit_reason"], evt["exit_price"]
+                        if exit_reason is not None:
+                            last_exit_idx = i
                     elif hit_take:
                         evt = self._close_position(exit_mid_price=self.cur_take, reason="TAKE")
                         exit_reason, exit_price = evt["exit_reason"], evt["exit_price"]
+                        if exit_reason is not None:
+                            last_exit_idx = i
 
             # 重新读取持仓（因为可能刚刚止损/止盈/爆仓平了）
             st = self.portfolio.state
@@ -206,48 +221,62 @@ class Backtester:
             # ========== B) 再处理交易信号（事件驱动） ==========
             trade_sig = float(row["trade_signal"])
             signal = int(row["signal"])
+            in_cooldown = (i - last_exit_idx) < self.cooldown_bars
 
             if trade_sig != 0:
-                # 目标仓位（BTC 数量）
-                target = 0.0
+                st = self.portfolio.state
+                current_pos = float(st.position)
+
+                # A版：禁止直接反手
                 if signal == 1:
-                    target = self.max_pos
+                    if current_pos < 0:
+                        evt = self._close_position(exit_mid_price=close, reason="SIG_CLOSE_SHORT")
+                        if evt["exit_reason"] is not None:
+                            exit_reason, exit_price = evt["exit_reason"], evt["exit_price"]
+                            last_exit_idx = i
+                    elif current_pos == 0 and not in_cooldown:
+                        target = self.max_pos
+                        order_qty = float(self.portfolio.target_position(target, close))
+                        if order_qty != 0:
+                            fill = self.broker.fill_price(close, order_qty)
+                            fill_info = self.portfolio.apply_fill(fill_price=fill, qty=order_qty, is_maker=False)
+                            self.trade_count += 1
+                            bar_order_qty = float(order_qty)
+                            bar_fee += float(fill_info.get("fee", 0.0)) if fill_info else 0.0
+
+                            st = self.portfolio.state
+                            if st.position != 0:
+                                self.entry_price = float(fill)
+                                side = 1
+                                res7 = float(row.get("resistance_7d", np.nan))
+                                sup7 = float(row.get("support_7d", np.nan))
+                                self._set_brackets(entry_price=float(fill), atr=atr, side=side, res7=res7, sup7=sup7)
+                                self.entry_risk = abs(self.entry_price - self.cur_stop) if self.cur_stop is not None else None
+
                 elif signal == -1:
-                    target = -self.max_pos
+                    if current_pos > 0:
+                        evt = self._close_position(exit_mid_price=close, reason="SIG_CLOSE_LONG")
+                        if evt["exit_reason"] is not None:
+                            exit_reason, exit_price = evt["exit_reason"], evt["exit_price"]
+                            last_exit_idx = i
+                    elif current_pos == 0 and not in_cooldown:
+                        target = -self.max_pos
+                        order_qty = float(self.portfolio.target_position(target, close))
+                        if order_qty != 0:
+                            fill = self.broker.fill_price(close, order_qty)
+                            fill_info = self.portfolio.apply_fill(fill_price=fill, qty=order_qty, is_maker=False)
+                            self.trade_count += 1
+                            bar_order_qty = float(order_qty)
+                            bar_fee += float(fill_info.get("fee", 0.0)) if fill_info else 0.0
 
-                # 由 portfolio 做限仓（保证金约束），返回需要成交的 qty
-                order_qty = float(self.portfolio.target_position(target, close))
-
-                if order_qty != 0:
-                    prev_pos = float(self.portfolio.state.position)
-                    fill = self.broker.fill_price(close, order_qty)
-                    fill_info = self.portfolio.apply_fill(fill_price=fill, qty=order_qty, is_maker=False)
-                    self.trade_count += 1
-                    bar_order_qty = float(order_qty)
-                    bar_fee += float(fill_info.get("fee", 0.0)) if fill_info else 0.0
-                    if fill_info and fill_info.get("realized", 0.0) != 0:
-                        self.closed_trade_pnls.append(float(fill_info["realized"]))
-
-                    st = self.portfolio.state
-                    if prev_pos != 0 and st.position != 0 and (prev_pos * st.position < 0):
-                        self.reversal_count += 1
-                        bar_reversal = True
-
-                    if st.position != 0:
-                        self.entry_price = float(fill)  # ✅ 记录入场价（用于 trailing 启用判断）
-
-                        side = 1 if st.position > 0 else -1
-                        res7 = float(row.get("resistance_7d", np.nan))
-                        sup7 = float(row.get("support_7d", np.nan))
-                        self._set_brackets(entry_price=float(fill), atr=atr, side=side, res7=res7, sup7=sup7)
-                        if self.cur_stop is not None:
-                            self.entry_risk = abs(self.entry_price - self.cur_stop)
-                        else:
-                            self.entry_risk = None
-                    else:
-                        self.cur_stop, self.cur_take = None, None
-                        self.entry_price = None  # ✅
-                        self.entry_risk = None
+                            st = self.portfolio.state
+                            if st.position != 0:
+                                self.entry_price = float(fill)
+                                side = -1
+                                res7 = float(row.get("resistance_7d", np.nan))
+                                sup7 = float(row.get("support_7d", np.nan))
+                                self._set_brackets(entry_price=float(fill), atr=atr, side=side, res7=res7, sup7=sup7)
+                                self.entry_risk = abs(self.entry_price - self.cur_stop) if self.cur_stop is not None else None
 
             # ========== C) 持仓期间追踪止损 ==========
             trailing_active = False

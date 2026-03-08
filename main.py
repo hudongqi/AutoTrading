@@ -27,9 +27,11 @@ def main():
     broker = SimBroker(slippage_bps=SLIPPAGE_BPS)
 
     bt = Backtester(
-        portfolio=portfolio,
         broker=broker,
-        max_pos=0.1,  # 比如 0.1 BTC
+        portfolio=portfolio,
+        strategy=strat,
+        max_pos=0.1,
+        cooldown_bars=3,
         stop_atr=2.0,
         take_R=4.0,
         trail_start_R=1.0,
