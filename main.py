@@ -29,7 +29,9 @@ def main():
         broker=broker,
         max_pos=10,  # 比如 0.1 BTC
         stop_atr=2.0,
-        take_atr=4.0,
+        take_R=4.0,
+        trail_start_R=1.0,
+        trail_atr=1.5,
         use_trailing=True,
         check_liq=True
     )
