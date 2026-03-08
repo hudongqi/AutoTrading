@@ -17,10 +17,10 @@ class Backtester:
         strategy,           # strategy instance（A版先只透传，不改信号逻辑）
         max_pos: float = 0.1,
         cooldown_bars: int = 3,
-        stop_atr: float = 1.2,  # 止损更近（高R关键）
-        take_R: float = 4.0,  # 以 risk 为基准的止盈倍数
-        trail_start_R: float = 1.0,  # >=1R 才启动追踪
-        trail_atr: float = 1.5,  # 追踪距离（可调）
+        stop_atr: float = 1.5,
+        take_R: float = 2.5,
+        trail_start_R: float = 1.2,
+        trail_atr: float = 2.0,
         use_trailing: bool = True,
         check_liq: bool = True,  # 是否做简化爆仓检查
     ):
@@ -218,6 +218,28 @@ class Backtester:
             st = self.portfolio.state
             pos = float(st.position)
 
+            # ========== B0) 趋势失效先平仓（但不反手） ==========
+            signal = int(row["signal"])
+            if pos > 0 and signal == -1:
+                self.reversal_count += 1
+                bar_reversal = True
+                evt = self._close_position(exit_mid_price=close, reason="TREND_EXIT_LONG")
+                if evt["exit_reason"] is not None:
+                    exit_reason, exit_price = evt["exit_reason"], evt["exit_price"]
+                    last_exit_idx = i
+
+            elif pos < 0 and signal == 1:
+                self.reversal_count += 1
+                bar_reversal = True
+                evt = self._close_position(exit_mid_price=close, reason="TREND_EXIT_SHORT")
+                if evt["exit_reason"] is not None:
+                    exit_reason, exit_price = evt["exit_reason"], evt["exit_price"]
+                    last_exit_idx = i
+
+            # 重新读取持仓
+            st = self.portfolio.state
+            pos = float(st.position)
+
             # ========== B) 再处理交易信号（事件驱动） ==========
             trade_sig = float(row["trade_signal"])
             signal = int(row["signal"])
@@ -230,6 +252,8 @@ class Backtester:
                 # A版：禁止直接反手
                 if signal == 1:
                     if current_pos < 0:
+                        self.reversal_count += 1
+                        bar_reversal = True
                         evt = self._close_position(exit_mid_price=close, reason="SIG_CLOSE_SHORT")
                         if evt["exit_reason"] is not None:
                             exit_reason, exit_price = evt["exit_reason"], evt["exit_price"]
@@ -255,6 +279,8 @@ class Backtester:
 
                 elif signal == -1:
                     if current_pos > 0:
+                        self.reversal_count += 1
+                        bar_reversal = True
                         evt = self._close_position(exit_mid_price=close, reason="SIG_CLOSE_LONG")
                         if evt["exit_reason"] is not None:
                             exit_reason, exit_price = evt["exit_reason"], evt["exit_price"]

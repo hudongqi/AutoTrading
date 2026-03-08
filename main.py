@@ -32,10 +32,10 @@ def main():
         strategy=strat,
         max_pos=0.1,
         cooldown_bars=3,
-        stop_atr=2.0,
-        take_R=4.0,
-        trail_start_R=1.0,
-        trail_atr=1.5,
+        stop_atr=1.5,
+        take_R=2.5,
+        trail_start_R=1.2,
+        trail_atr=2.0,
         use_trailing=True,
         check_liq=True
     )
