@@ -19,8 +19,8 @@ def main():
     portfolio = PerpPortfolio(
         initial_cash=INITIAL_CASH,
         leverage=2,
-        taker_fee_rate=FEE_RATE,
-        maker_fee_rate=FEE_RATE,  # 不区分就填一样
+        taker_fee_rate=TAKER_FEE_RATE,
+        maker_fee_rate=MAKER_FEE_RATE,
         maint_margin_rate=0.005
     )
 
@@ -30,7 +30,7 @@ def main():
         broker=broker,
         portfolio=portfolio,
         strategy=strat,
-        max_pos=0.15,
+        max_pos=0.8,
         cooldown_bars=3,
         stop_atr=1.5,
         take_R=3.5,

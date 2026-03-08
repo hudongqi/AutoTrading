@@ -4,5 +4,12 @@ END = "2026-03-01"
 
 INITIAL_CASH = 10000
 
-FEE_RATE = 0.0004           # 0.04% taker
+# Binance USDⓈ-M (普通用户长期稳定费率)
+MAKER_FEE_RATE = 0.0002
+TAKER_FEE_RATE = 0.0005
+
+# 可选：BNB 抵扣版本（默认不启用）
+MAKER_FEE_RATE_BNB = 0.00018
+TAKER_FEE_RATE_BNB = 0.00045
+
 SLIPPAGE_BPS = 5            # 0.05%
