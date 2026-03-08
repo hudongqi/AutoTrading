@@ -40,7 +40,6 @@ class Backtester:
         self.cur_take = None
         self.entry_price = None
         self.entry_risk = None
-        self.partial_tp_done = False
 
         self.trade_count = 0
         self.reversal_count = 0
@@ -149,7 +148,6 @@ class Backtester:
         self.cur_stop, self.cur_take = None, None
         self.entry_price = None
         self.entry_risk = None
-        self.partial_tp_done = False
 
         return {"exit_reason": reason, "exit_price": float(fill)}
 
@@ -273,7 +271,6 @@ class Backtester:
                             st = self.portfolio.state
                             if st.position != 0:
                                 self.entry_price = float(fill)
-                                self.partial_tp_done = False
                                 side = 1
                                 res7 = float(row.get("resistance_7d", np.nan))
                                 sup7 = float(row.get("support_7d", np.nan))
@@ -301,36 +298,11 @@ class Backtester:
                             st = self.portfolio.state
                             if st.position != 0:
                                 self.entry_price = float(fill)
-                                self.partial_tp_done = False
                                 side = -1
                                 res7 = float(row.get("resistance_7d", np.nan))
                                 sup7 = float(row.get("support_7d", np.nan))
                                 self._set_brackets(entry_price=float(fill), atr=atr, side=side, res7=res7, sup7=sup7)
                                 self.entry_risk = abs(self.entry_price - self.cur_stop) if self.cur_stop is not None else None
-
-            # ========== B1) 分批止盈：到 2R 平掉 50%，剩余仓位继续 trailing ==========
-            st = self.portfolio.state
-            if (
-                st.position != 0 and
-                (not self.partial_tp_done) and
-                (self.entry_price is not None) and
-                (self.entry_risk is not None) and self.entry_risk > 0
-            ):
-                side = 1 if st.position > 0 else -1
-                profit = (close - self.entry_price) if side == 1 else (self.entry_price - close)
-                if profit >= 2.0 * self.entry_risk:
-                    partial_qty = -0.5 * st.position
-                    fill = self.broker.fill_price(close, partial_qty)
-                    fill_info = self.portfolio.apply_fill(fill_price=fill, qty=partial_qty, is_maker=False)
-                    self.trade_count += 1
-                    bar_order_qty += float(partial_qty)
-                    bar_fee += float(fill_info.get("fee", 0.0)) if fill_info else 0.0
-                    if fill_info and fill_info.get("realized", 0.0) != 0:
-                        self.closed_trade_pnls.append(float(fill_info["realized"]))
-                    self.partial_tp_done = True
-                    if exit_reason is None:
-                        exit_reason = "PARTIAL_TP_2R"
-                        exit_price = float(fill)
 
             # ========== C) 持仓期间追踪止损 ==========
             trailing_active = False
