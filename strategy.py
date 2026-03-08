@@ -3,11 +3,11 @@ import numpy as np
 
 class BTCPerpTrendStrategy1H:
 
-    def __init__(self, fast=5, slow=15, atr_period=14, min_volatility=0.005, fast_4h=5, slow_4h=15):
+    def __init__(self, fast=5, slow=15, atr_period=14, atr_pct_threshold=0.0045, fast_4h=5, slow_4h=15):
         self.fast = fast
         self.slow = slow
         self.atr_period = atr_period
-        self.min_volatility = min_volatility
+        self.atr_pct_threshold = atr_pct_threshold
         self.fast_4h = fast_4h
         self.slow_4h = slow_4h
         self.trail_start_atr = 1.5  # 盈利达到 1.5 ATR 才启动 trailing
@@ -44,7 +44,7 @@ class BTCPerpTrendStrategy1H:
         out["volatility"] = out["atr_pct"]
 
         # ===== 波动过滤 =====
-        out["vol_ok"] = out["atr_pct"] > self.min_volatility
+        out["vol_ok"] = out["atr_pct"] > self.atr_pct_threshold
 
         # ===== 7天支撑/压力（1h = 168根）=====
         WINDOW = 7 * 24
@@ -88,13 +88,13 @@ class BTCPerpTrendStrategy1H:
         long_cond = (
             (out["ma_fast"] > out["ma_slow"]) &
             (out["trend_4h"] == 1) &
-            (out["atr_pct"] > 0.005) &
+            (out["atr_pct"] > self.atr_pct_threshold) &
             (out["close"] > out["resistance_7d"])
         )
         short_cond = (
             (out["ma_fast"] < out["ma_slow"]) &
             (out["trend_4h"] == -1) &
-            (out["atr_pct"] > 0.005) &
+            (out["atr_pct"] > self.atr_pct_threshold) &
             (out["close"] < out["support_7d"])
         )
 
