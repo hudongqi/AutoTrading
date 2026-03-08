@@ -1,34 +1,53 @@
 {
+  "schema_version": "2.0",
+  "last_updated_utc": "2026-03-08T00:00:00Z",
   "macro": {
     "block": false,
     "reduce_risk": false,
-    "reason": ""
+    "reason": "",
+    "upcoming_events": [
+      {
+        "date": "2026-03-12",
+        "name": "CPI数据发布",
+        "impact": "high"
+      },
+      {
+        "date": "2026-03-14",
+        "name": "FOMC利率决议",
+        "impact": "high"
+      }
+    ]
   },
   "symbols": {
     "SOLUSDT": {
       "block": false,
       "reduce_risk": false,
-      "reason": ""
+      "reason": "",
+      "news_signals": []
     },
     "XRPUSDT": {
       "block": false,
       "reduce_risk": false,
-      "reason": ""
+      "reason": "",
+      "news_signals": []
     },
     "DOGEUSDT": {
       "block": false,
       "reduce_risk": false,
-      "reason": ""
+      "reason": "",
+      "news_signals": []
     },
     "SUIUSDT": {
       "block": false,
       "reduce_risk": false,
-      "reason": ""
+      "reason": "",
+      "news_signals": []
     },
     "PEPEUSDT": {
       "block": false,
       "reduce_risk": false,
-      "reason": ""
+      "reason": "",
+      "news_signals": []
     }
   }
 }

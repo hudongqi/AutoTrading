@@ -1,55 +1,5 @@
 {
-  "macro": {
-    "block": false,
-    "reduce_risk": false,
-    "reason": "",
-    "upcoming_events": [
-      {
-        "date": "2026-03-12",
-        "name": "CPI数据发布",
-        "impact": "high"
-      },
-      {
-        "date": "2026-03-14",
-        "name": "FOMC利率决议",
-        "impact": "high"
-      }
-    ]
-  },
-  "symbols": {
-    "SOLUSDT": {
-      "block": false,
-      "reduce_risk": false,
-      "reason": "",
-      "news_signals": [
-        "示例: Solana网络升级完成，性能提升"
-      ]
-    },
-    "XRPUSDT": {
-      "block": false,
-      "reduce_risk": false,
-      "reason": "",
-      "news_signals": [
-        "示例: Ripple与银行合作扩大"
-      ]
-    },
-    "DOGEUSDT": {
-      "block": false,
-      "reduce_risk": false,
-      "reason": "",
-      "news_signals": []
-    },
-    "SUIUSDT": {
-      "block": false,
-      "reduce_risk": false,
-      "reason": "",
-      "news_signals": []
-    },
-    "PEPEUSDT": {
-      "block": false,
-      "reduce_risk": false,
-      "reason": "",
-      "news_signals": []
-    }
-  }
+  "deprecated": true,
+  "message": "DEPRECATED: Use event_signals.json only. This file is no longer read by any production script.",
+  "replacement": "event_signals.json"
 }
