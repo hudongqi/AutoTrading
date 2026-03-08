@@ -1,0 +1,34 @@
+{
+  "macro": {
+    "block": false,
+    "reduce_risk": false,
+    "reason": ""
+  },
+  "symbols": {
+    "SOLUSDT": {
+      "block": false,
+      "reduce_risk": false,
+      "reason": ""
+    },
+    "XRPUSDT": {
+      "block": false,
+      "reduce_risk": false,
+      "reason": ""
+    },
+    "DOGEUSDT": {
+      "block": false,
+      "reduce_risk": false,
+      "reason": ""
+    },
+    "SUIUSDT": {
+      "block": false,
+      "reduce_risk": false,
+      "reason": ""
+    },
+    "PEPEUSDT": {
+      "block": false,
+      "reduce_risk": false,
+      "reason": ""
+    }
+  }
+}
