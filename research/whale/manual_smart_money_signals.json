@@ -1,0 +1,31 @@
+{
+  "note": "仅填写经过历史验证的 smart money 观点；不要基于单笔大额转账直接给结论",
+  "updated_utc": "2026-03-11T14:09:45.364705+00:00",
+  "symbols": {
+    "SOLUSDT": {
+      "whale_score": 0.0,
+      "whale_bias": "NEUTRAL",
+      "whale_reason": "No validated smart-money signal"
+    },
+    "XRPUSDT": {
+      "whale_score": 0.0,
+      "whale_bias": "NEUTRAL",
+      "whale_reason": "No validated smart-money signal"
+    },
+    "DOGEUSDT": {
+      "whale_score": 0.0,
+      "whale_bias": "NEUTRAL",
+      "whale_reason": "No validated smart-money signal"
+    },
+    "SUIUSDT": {
+      "whale_score": 0.0,
+      "whale_bias": "NEUTRAL",
+      "whale_reason": "No validated smart-money signal"
+    },
+    "PEPEUSDT": {
+      "whale_score": 0.0,
+      "whale_bias": "NEUTRAL",
+      "whale_reason": "No validated smart-money signal"
+    }
+  }
+}

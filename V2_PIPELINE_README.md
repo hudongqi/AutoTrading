@@ -18,7 +18,7 @@
 ### schema（最终）
 ```json
 {
-  "schema_version": "2.0",
+  "schema_version": "2.1",
   "last_updated_utc": "ISO-8601",
   "macro": {
     "block": false,
@@ -28,12 +28,18 @@
       {"date": "YYYY-MM-DD", "name": "...", "impact": "low|medium|high"}
     ]
   },
+  "whale": {
+    "enabled": true,
+    "mode": "auxiliary",
+    "note": "Only for sizing/confidence/candidate filtering, never standalone trade trigger.",
+    "last_updated_utc": "ISO-8601"
+  },
   "symbols": {
-    "SOLUSDT": {"block": false, "reduce_risk": false, "reason": "", "news_signals": []},
-    "XRPUSDT": {"block": false, "reduce_risk": false, "reason": "", "news_signals": []},
-    "DOGEUSDT": {"block": false, "reduce_risk": false, "reason": "", "news_signals": []},
-    "SUIUSDT": {"block": false, "reduce_risk": false, "reason": "", "news_signals": []},
-    "PEPEUSDT": {"block": false, "reduce_risk": false, "reason": "", "news_signals": []}
+    "SOLUSDT": {"block": false, "reduce_risk": false, "reason": "", "news_signals": [], "whale_score": 0.0, "whale_bias": "NEUTRAL", "whale_reason": ""},
+    "XRPUSDT": {"block": false, "reduce_risk": false, "reason": "", "news_signals": [], "whale_score": 0.0, "whale_bias": "NEUTRAL", "whale_reason": ""},
+    "DOGEUSDT": {"block": false, "reduce_risk": false, "reason": "", "news_signals": [], "whale_score": 0.0, "whale_bias": "NEUTRAL", "whale_reason": ""},
+    "SUIUSDT": {"block": false, "reduce_risk": false, "reason": "", "news_signals": [], "whale_score": 0.0, "whale_bias": "NEUTRAL", "whale_reason": ""},
+    "PEPEUSDT": {"block": false, "reduce_risk": false, "reason": "", "news_signals": [], "whale_score": 0.0, "whale_bias": "NEUTRAL", "whale_reason": ""}
   }
 }
 ```
@@ -45,6 +51,7 @@ python3 run_daily_pipeline.py
 
 流程：
 1. 新闻采集（生成 digest/summary）
-2. 人工确认并编辑 `event_signals.json`
-3. 运行 `research_agent_v2.py`
-4. 输出最终候选池结果
+2. Whale 辅助信号收集并合并到 `event_signals.json`
+3. 人工确认并编辑 `event_signals.json`
+4. 运行 `research_agent_v2.py`
+5. 输出最终候选池结果

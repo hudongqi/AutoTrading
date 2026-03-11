@@ -4,10 +4,11 @@ Production daily pipeline (v2 only)
 
 Flow:
   a) run_news_collection.py
-  b) produce digest/summary files
-  c) read unified event_signals.json (manual confirmation gate)
-  d) run_research_v2.py
-  e) output final candidate pool result
+  b) run_whale_collection.py (auxiliary smart-money signals)
+  c) produce digest/summary files
+  d) read unified event_signals.json (manual confirmation gate)
+  e) run_research_v2.py
+  f) output final candidate pool result
 """
 
 import argparse
@@ -35,7 +36,7 @@ def validate_event_signals(path: Path):
 
     data = json.loads(path.read_text(encoding="utf-8"))
 
-    required_top = ["macro", "symbols"]
+    required_top = ["macro", "symbols", "whale"]
     for k in required_top:
         if k not in data:
             raise ValueError(f"event_signals.json missing top-level field: {k}")
@@ -45,11 +46,16 @@ def validate_event_signals(path: Path):
         if k not in macro:
             raise ValueError(f"event_signals.json macro missing field: {k}")
 
+    whale = data["whale"]
+    for k in ["enabled", "mode", "note", "last_updated_utc"]:
+        if k not in whale:
+            raise ValueError(f"event_signals.json whale missing field: {k}")
+
     symbols = data["symbols"]
     for sym in POOL_SYMBOLS:
         if sym not in symbols:
             raise ValueError(f"event_signals.json symbols missing key: {sym}")
-        for k in ["block", "reduce_risk", "reason", "news_signals"]:
+        for k in ["block", "reduce_risk", "reason", "news_signals", "whale_score", "whale_bias", "whale_reason"]:
             if k not in symbols[sym]:
                 raise ValueError(f"event_signals.json symbols.{sym} missing field: {k}")
 
@@ -89,7 +95,10 @@ def main():
     # a) news collection
     run_cmd([sys.executable, "run_news_collection.py"])
 
-    # b) locate digest/summary outputs
+    # b) whale auxiliary signals
+    run_cmd([sys.executable, "run_whale_collection.py"])
+
+    # c) locate digest/summary outputs
     digest, summary = latest_news_outputs()
     print("\nLatest news outputs:")
     print(f"- digest:  {digest}")

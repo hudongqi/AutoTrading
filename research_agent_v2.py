@@ -110,6 +110,10 @@ class SymbolResearch:
     event_notes: List[str]
     # 新增: 新闻/宏观相关
     news_signals: List[str]
+    whale_score: float
+    whale_bias: str
+    whale_reason: str
+    whale_adjustment: float
     funding_change_24h: float
     oi_change_24h: float
 
@@ -156,12 +160,21 @@ class EventFilterAgent:
                     "reason": "",
                     "upcoming_events": []
                 },
+                "whale": {
+                    "enabled": True,
+                    "mode": "auxiliary",
+                    "note": "Only for sizing/confidence/candidate filtering, never standalone trade trigger.",
+                    "last_updated_utc": datetime.now(timezone.utc).isoformat()
+                },
                 "symbols": {
                     sym: {
                         "block": False,
                         "reduce_risk": False,
                         "reason": "",
-                        "news_signals": []
+                        "news_signals": [],
+                        "whale_score": 0.0,
+                        "whale_bias": "NEUTRAL",
+                        "whale_reason": "No validated smart-money signal"
                     } for sym in POOL_SYMBOLS_RAW
                 }
             }
@@ -231,26 +244,37 @@ class EventFilterAgent:
         notes.append("✅ 无重大宏观风险信号")
         return MacroState.ALLOW, notes
     
-    def evaluate_symbol(self, symbol_raw: str, now_utc: datetime) -> Tuple[DecisionLabel, List[str], List[str]]:
+    def evaluate_symbol(self, symbol_raw: str, now_utc: datetime) -> Tuple[DecisionLabel, List[str], List[str], float, str, str]:
         """
         评估单个币种的事件风险
-        返回: (决策标签, 原因列表, 新闻信号列表)
+        返回: (决策标签, 原因列表, 新闻信号列表, whale_score, whale_bias, whale_reason)
         """
         data = self._load_signal_file()
         symbol_events = data.get("symbols", {}).get(symbol_raw, {})
         notes = []
         news_signals = []
+
+        whale_cfg = data.get("whale", {})
+        whale_enabled = bool(whale_cfg.get("enabled", True))
+        whale_score = float(symbol_events.get("whale_score", 0.0)) if whale_enabled else 0.0
+        whale_score = max(-1.0, min(1.0, whale_score))
+        whale_bias = str(symbol_events.get("whale_bias", "NEUTRAL")).upper().strip() if whale_enabled else "NEUTRAL"
+        if whale_bias not in {"BULLISH", "BEARISH", "NEUTRAL"}:
+            whale_bias = "NEUTRAL"
+        whale_reason = str(symbol_events.get("whale_reason", "No validated smart-money signal")).strip() if whale_enabled else "Whale layer disabled"
+        if not whale_reason:
+            whale_reason = "No validated smart-money signal"
         
         # 1. 检查外部信号
         if symbol_events.get("block", False):
             reason = symbol_events.get("reason", '币种特定高风险事件')
             notes.append(f"🚫 外部信号 BLOCK: {reason}")
-            return DecisionLabel.BLOCK, notes, news_signals
+            return DecisionLabel.BLOCK, notes, news_signals, whale_score, whale_bias, whale_reason
         
         if symbol_events.get("reduce_risk", False):
             reason = symbol_events.get("reason", '币种不确定性升高')
             notes.append(f"⚠️  外部信号 REDUCE_RISK: {reason}")
-            return DecisionLabel.REDUCE_RISK, notes, news_signals
+            return DecisionLabel.REDUCE_RISK, notes, news_signals, whale_score, whale_bias, whale_reason
         
         # 2. 检查币种特定新闻信号
         symbol_news = symbol_events.get("news_signals", [])
@@ -258,17 +282,17 @@ class EventFilterAgent:
             news_signals.append(news)
             if "block" in news.lower() or "重大负面" in news:
                 notes.append(f"📰 负面新闻: {news}")
-                return DecisionLabel.BLOCK, notes, news_signals
+                return DecisionLabel.BLOCK, notes, news_signals, whale_score, whale_bias, whale_reason
             elif "reduce" in news.lower() or "谨慎" in news:
                 notes.append(f"📰 警示新闻: {news}")
-                return DecisionLabel.REDUCE_RISK, notes, news_signals
+                return DecisionLabel.REDUCE_RISK, notes, news_signals, whale_score, whale_bias, whale_reason
         
         # 3. 检查关键词匹配 (如果有外部数据源)
         keywords = SYMBOL_NEWS_KEYWORDS.get(symbol_raw, [])
         # 这里可以接入实际的新闻 API
         
         notes.append("✅ 无特定事件风险")
-        return DecisionLabel.ALLOW, notes, news_signals
+        return DecisionLabel.ALLOW, notes, news_signals, whale_score, whale_bias, whale_reason
 
 
 class ResearchDataAgent:
@@ -553,6 +577,34 @@ class ScoringAgent:
         
         return df
     
+    def apply_whale_overlay(self, df: pd.DataFrame, event_results: Dict) -> pd.DataFrame:
+        """
+        smart-money 辅助增强层：
+        - 仅微调候选评分（不触发 BLOCK/开平仓）
+        - 用于仓位/置信度/candidate ranking
+        """
+        df["whale_adjustment"] = 0.0
+
+        for symbol_raw in POOL_SYMBOLS_RAW:
+            result = event_results.get(symbol_raw, {})
+            whale_score = float(result.get("whale_score", 0.0))
+            whale_score = max(-1.0, min(1.0, whale_score))
+            whale_bias = str(result.get("whale_bias", "NEUTRAL")).upper()
+
+            direction = 0.0
+            if whale_bias == "BULLISH":
+                direction = 1.0
+            elif whale_bias == "BEARISH":
+                direction = -1.0
+
+            # 最大 ±0.08 的温和调整
+            adjustment = 0.08 * abs(whale_score) * direction
+            mask = df["symbol"] == symbol_raw
+            df.loc[mask, "total_score"] += adjustment
+            df.loc[mask, "whale_adjustment"] = adjustment
+
+        return df
+
     def apply_special_rules(self, df: pd.DataFrame) -> pd.DataFrame:
         pepe_mask = df["symbol"] == "PEPEUSDT"
         df.loc[pepe_mask & (df["continuation_score"] < 0.55), "total_score"] = -1.0
@@ -592,6 +644,9 @@ class ArchiveAgent:
                 "funding_state": sym.funding_state,
                 "oi_state": sym.oi_state,
                 "has_major_event": sym.has_major_event,
+                "whale_score": round(sym.whale_score, 4),
+                "whale_bias": sym.whale_bias,
+                "whale_adjustment": round(sym.whale_adjustment, 4),
                 "top_candidate": sym.symbol in report.top_candidates,
             }
             records.append(record)
@@ -680,6 +735,10 @@ class ResearchOutputAgent:
                 "trend_score": round(sym.trend_score, 2),
                 "funding_change_24h": sym.funding_change_24h,
                 "oi_change_24h": sym.oi_change_24h,
+                "whale_score": sym.whale_score,
+                "whale_bias": sym.whale_bias,
+                "whale_reason": sym.whale_reason,
+                "whale_adjustment": sym.whale_adjustment,
                 "reasons": sym.decision_reasons,
                 "news_signals": sym.news_signals,
                 "has_major_event": sym.has_major_event,
@@ -743,6 +802,8 @@ class ResearchOutputAgent:
                         f"- **4h趋势**: {sym.trend_4h}",
                         f"- **资金费状态**: {sym.funding_state} (变化: {sym.funding_change_24h:+.4f})",
                         f"- **OI状态**: {sym.oi_state} (变化: {sym.oi_change_24h:+.2f}%)",
+                        f"- **Whale辅助**: {sym.whale_bias} | score={sym.whale_score:+.2f} | 调整={sym.whale_adjustment:+.3f}",
+                        f"- **Whale说明**: {sym.whale_reason}",
                         "",
                         "**推荐理由**:",
                     ])
@@ -830,15 +891,19 @@ class HighVolPoolResearchAgent:
         print("  评估事件风险...")
         event_results = {}
         for sym_raw in POOL_SYMBOLS_RAW:
-            decision, notes, news_signals = self.event_agent.evaluate_symbol(sym_raw, now)
+            decision, notes, news_signals, whale_score, whale_bias, whale_reason = self.event_agent.evaluate_symbol(sym_raw, now)
             event_results[sym_raw] = {
                 "decision": decision,
                 "notes": notes,
                 "news_signals": news_signals,
+                "whale_score": whale_score,
+                "whale_bias": whale_bias,
+                "whale_reason": whale_reason,
             }
         
         # 5. 应用过滤规则
         score_df = self.scoring_agent.apply_event_filters(score_df, event_results)
+        score_df = self.scoring_agent.apply_whale_overlay(score_df, event_results)
         score_df = self.scoring_agent.apply_special_rules(score_df)
         
         # 6. 排序
@@ -856,6 +921,9 @@ class HighVolPoolResearchAgent:
             decision = ev_result.get("decision", DecisionLabel.ALLOW)
             event_notes = ev_result.get("notes", [])
             news_signals = ev_result.get("news_signals", [])
+            whale_score = float(ev_result.get("whale_score", 0.0))
+            whale_bias = ev_result.get("whale_bias", "NEUTRAL")
+            whale_reason = ev_result.get("whale_reason", "No validated smart-money signal")
             
             if row["total_score"] < MIN_TOTAL_SCORE and decision != DecisionLabel.BLOCK:
                 decision = DecisionLabel.BLOCK
@@ -873,6 +941,9 @@ class HighVolPoolResearchAgent:
             if row["fake_breakout_penalty"] < 0.4:
                 decision_reasons.append("假突破风险较低")
             
+            if abs(whale_score) >= 0.4 and whale_bias != "NEUTRAL":
+                decision_reasons.append(f"Smart-money {whale_bias} 辅助因子: {whale_reason}")
+
             if not decision_reasons and decision != DecisionLabel.BLOCK:
                 decision_reasons.append("综合评分达标")
             
@@ -917,6 +988,10 @@ class HighVolPoolResearchAgent:
                 has_major_event=decision != DecisionLabel.ALLOW or len(news_signals) > 0,
                 event_notes=event_notes,
                 news_signals=news_signals,
+                whale_score=whale_score,
+                whale_bias=whale_bias,
+                whale_reason=whale_reason,
+                whale_adjustment=row.get("whale_adjustment", 0.0),
                 funding_change_24h=row.get("funding_change_24h", 0),
                 oi_change_24h=row.get("oi_change_24h", 0),
             )
