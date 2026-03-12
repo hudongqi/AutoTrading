@@ -1,9 +1,11 @@
 {
-  "schema_version": "2.1",
-  "last_updated_utc": "2026-03-11T00:00:00Z",
+  "schema_version": "2.2",
+  "last_updated_utc": "2026-03-12T03:45:29.951256+00:00",
+  "market_bias": "NEUTRAL",
+  "risk_mode": "REDUCE_RISK",
   "macro": {
     "block": false,
-    "reduce_risk": false,
+    "reduce_risk": true,
     "reason": "",
     "upcoming_events": [
       {
@@ -18,11 +20,26 @@
       }
     ]
   },
+  "geopolitics": {
+    "reduce_risk": false,
+    "block_new_entries": false,
+    "alts_bias": "NEUTRAL",
+    "reason": "No major geopolitical escalation"
+  },
+  "sentiment": {
+    "bias": "NEUTRAL",
+    "strength": "LOW",
+    "recommended_action": "WAIT",
+    "reason": "aggregate_symbol_sentiment=+0.00"
+  },
   "whale": {
     "enabled": true,
     "mode": "auxiliary",
     "note": "Only for sizing/confidence/candidate filtering, never standalone trade trigger.",
-    "last_updated_utc": "2026-03-11T14:09:45.365061+00:00"
+    "last_updated_utc": "2026-03-12T03:44:46.272311+00:00",
+    "whale_score": 0.0,
+    "whale_bias": "NEUTRAL",
+    "whale_reason": "Aggregated from validated smart-money symbol signals"
   },
   "symbols": {
     "SOLUSDT": {
@@ -32,7 +49,10 @@
       "news_signals": [],
       "whale_score": 0.0,
       "whale_bias": "NEUTRAL",
-      "whale_reason": "No validated smart-money signal"
+      "whale_reason": "No validated smart-money signal",
+      "bias": "SHORT",
+      "strength": "LOW",
+      "recommended_action": "BLOCK_NEW_ENTRIES"
     },
     "XRPUSDT": {
       "block": false,
@@ -41,7 +61,10 @@
       "news_signals": [],
       "whale_score": 0.0,
       "whale_bias": "NEUTRAL",
-      "whale_reason": "No validated smart-money signal"
+      "whale_reason": "No validated smart-money signal",
+      "bias": "SHORT",
+      "strength": "LOW",
+      "recommended_action": "BLOCK_NEW_ENTRIES"
     },
     "DOGEUSDT": {
       "block": false,
@@ -50,7 +73,10 @@
       "news_signals": [],
       "whale_score": 0.0,
       "whale_bias": "NEUTRAL",
-      "whale_reason": "No validated smart-money signal"
+      "whale_reason": "No validated smart-money signal",
+      "bias": "SHORT",
+      "strength": "LOW",
+      "recommended_action": "BLOCK_NEW_ENTRIES"
     },
     "SUIUSDT": {
       "block": false,
@@ -59,7 +85,10 @@
       "news_signals": [],
       "whale_score": 0.0,
       "whale_bias": "NEUTRAL",
-      "whale_reason": "No validated smart-money signal"
+      "whale_reason": "No validated smart-money signal",
+      "bias": "LONG",
+      "strength": "LOW",
+      "recommended_action": "BLOCK_NEW_ENTRIES"
     },
     "PEPEUSDT": {
       "block": false,
@@ -68,7 +97,10 @@
       "news_signals": [],
       "whale_score": 0.0,
       "whale_bias": "NEUTRAL",
-      "whale_reason": "No validated smart-money signal"
+      "whale_reason": "No validated smart-money signal",
+      "bias": "SHORT",
+      "strength": "LOW",
+      "recommended_action": "BLOCK_NEW_ENTRIES"
     }
   }
 }

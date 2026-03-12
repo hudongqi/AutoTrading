@@ -93,17 +93,40 @@ class WhaleSignalCollector:
 
         data = json.loads(self.event_file.read_text(encoding="utf-8"))
         data.setdefault("whale", {})
+        avg_score = sum(v.whale_score for v in signals.values()) / max(1, len(signals))
+        if avg_score > 0.2:
+            agg_bias = "BULLISH"
+        elif avg_score < -0.2:
+            agg_bias = "BEARISH"
+        else:
+            agg_bias = "NEUTRAL"
+
         data["whale"].update({
             "enabled": True,
             "mode": "auxiliary",
             "note": "Only for sizing/confidence/candidate filtering, never standalone trade trigger.",
             "last_updated_utc": datetime.now(timezone.utc).isoformat(),
+            "whale_score": round(avg_score, 4),
+            "whale_bias": agg_bias,
+            "whale_reason": "Aggregated from validated smart-money symbol signals",
         })
+
+        data.setdefault("market_bias", "NEUTRAL")
+        data.setdefault("risk_mode", "NORMAL")
+        data.setdefault("sentiment", {"bias": "NEUTRAL", "strength": "LOW", "recommended_action": "WAIT", "reason": "not computed yet"})
+        data.setdefault("geopolitics", {"reduce_risk": False, "block_new_entries": False, "alts_bias": "NEUTRAL", "reason": "No major geopolitical escalation"})
 
         data.setdefault("symbols", {})
         for s in POOL_SYMBOLS:
             data["symbols"].setdefault(s, {})
             ws = signals[s]
+            data["symbols"][s].setdefault("block", False)
+            data["symbols"][s].setdefault("reduce_risk", False)
+            data["symbols"][s].setdefault("reason", "")
+            data["symbols"][s].setdefault("news_signals", [])
+            data["symbols"][s].setdefault("bias", "NEUTRAL")
+            data["symbols"][s].setdefault("strength", "LOW")
+            data["symbols"][s].setdefault("recommended_action", "WAIT")
             data["symbols"][s]["whale_score"] = ws.whale_score
             data["symbols"][s]["whale_bias"] = ws.whale_bias
             data["symbols"][s]["whale_reason"] = ws.whale_reason

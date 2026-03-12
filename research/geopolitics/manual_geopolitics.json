@@ -1,0 +1,11 @@
+{
+  "updated_at": "2026-03-12T03:44:12.980327+00:00",
+  "market_bias": "NEUTRAL",
+  "risk_mode": "NORMAL",
+  "geopolitics": {
+    "reduce_risk": false,
+    "block_new_entries": false,
+    "alts_bias": "NEUTRAL",
+    "reason": "No major geopolitical escalation"
+  }
+}

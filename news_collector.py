@@ -388,11 +388,27 @@ class NewsDigestAgent:
         self.base_dir = base_dir
         self.collectors = [CryptoPanicCollector(), CointelegraphCollector(), BinanceAnnouncementCollector()]
         self.macro_collector = MacroDataCollector()
+        self.geopolitics_file = "research/geopolitics/manual_geopolitics.json"
         self._ensure_directories()
 
     def _ensure_directories(self):
         os.makedirs(f"{self.base_dir}/daily", exist_ok=True)
         os.makedirs(f"{self.base_dir}/archive", exist_ok=True)
+        os.makedirs("research/geopolitics", exist_ok=True)
+        if not os.path.exists(self.geopolitics_file):
+            template = {
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "market_bias": "NEUTRAL",
+                "risk_mode": "NORMAL",
+                "geopolitics": {
+                    "reduce_risk": False,
+                    "block_new_entries": False,
+                    "alts_bias": "NEUTRAL",
+                    "reason": "No major geopolitical escalation"
+                }
+            }
+            with open(self.geopolitics_file, "w", encoding="utf-8") as f:
+                json.dump(template, f, ensure_ascii=False, indent=2)
 
     def collect_daily(self) -> DailyDigest:
         now = datetime.now(timezone.utc)
@@ -435,6 +451,26 @@ class NewsDigestAgent:
             unclassified=unclassified,
             stats=stats,
         )
+
+    def _load_geopolitics(self) -> dict:
+        try:
+            with open(self.geopolitics_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            print(f"[WARN] geopolitics load failed: {e}")
+            data = {}
+
+        geo = data.get("geopolitics", {})
+        return {
+            "market_bias": str(data.get("market_bias", "NEUTRAL")).upper(),
+            "risk_mode": str(data.get("risk_mode", "NORMAL")).upper(),
+            "geopolitics": {
+                "reduce_risk": bool(geo.get("reduce_risk", False)),
+                "block_new_entries": bool(geo.get("block_new_entries", False)),
+                "alts_bias": str(geo.get("alts_bias", "NEUTRAL")).upper(),
+                "reason": str(geo.get("reason", "No major geopolitical escalation")),
+            },
+        }
 
     @staticmethod
     def _symbol_bias(sentiment_avg: float) -> str:
@@ -525,10 +561,48 @@ class NewsDigestAgent:
         if symbol_research:
             overall_action = max((v["recommended_action"] for v in symbol_research.values()), key=lambda x: action_rank.get(x, 0))
 
+        geo = self._load_geopolitics()
+
+        sentiment_score = 0.0
+        if symbol_research:
+            mapper = {"LONG": 1.0, "SHORT": -1.0, "NEUTRAL": 0.0}
+            sentiment_score = sum(mapper.get(v["bias"], 0.0) for v in symbol_research.values()) / len(symbol_research)
+        sentiment_bias = "BULLISH" if sentiment_score > 0.2 else "BEARISH" if sentiment_score < -0.2 else "NEUTRAL"
+        sentiment_strength = "HIGH" if abs(sentiment_score) > 0.6 else "MEDIUM" if abs(sentiment_score) > 0.25 else "LOW"
+
+        whale_score = 0.0
+        whale_bias = "NEUTRAL"
+        whale_reason = "No validated smart-money signal"
+        try:
+            event_data = json.load(open("event_signals.json", "r", encoding="utf-8"))
+            wcfg = event_data.get("whale", {})
+            whale_score = float(wcfg.get("whale_score", 0.0))
+            whale_bias = str(wcfg.get("whale_bias", "NEUTRAL")).upper()
+            whale_reason = str(wcfg.get("whale_reason", whale_reason))
+        except Exception as e:
+            print(f"[WARN] load whale aggregate failed: {e}")
+
+        market_bias = geo["market_bias"]
+        risk_mode = geo["risk_mode"]
+        if overall_action == "REDUCE_RISK" or geo["geopolitics"]["reduce_risk"]:
+            risk_mode = "REDUCE_RISK"
+
         return {
             "date": digest.date,
             "generated_at": digest.generated_at,
+            "market_bias": market_bias,
+            "risk_mode": risk_mode,
             "macro": macro_items,
+            "geopolitics": geo["geopolitics"],
+            "sentiment": {
+                "bias": sentiment_bias,
+                "strength": sentiment_strength,
+                "recommended_action": overall_action,
+                "reason": f"aggregate_symbol_sentiment={sentiment_score:+.2f}",
+            },
+            "whale_score": whale_score,
+            "whale_bias": whale_bias,
+            "whale_reason": whale_reason,
             "symbols": symbol_research,
             "overall_recommendation": overall_action,
             "note": "Decision-support only. Final trading decision requires manual confirmation and risk checks.",

@@ -13,6 +13,7 @@ import json
 import csv
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 from enum import Enum
 
@@ -207,7 +208,16 @@ class EventFilterAgent:
             notes.append(f"⚠️  外部信号 REDUCE_RISK: {macro.get('reason', '不确定性升高')}")
             return MacroState.REDUCE_RISK, notes
         
-        # 2. 检查即将发生的事件
+        # 2. 地缘政治风险层（与宏观并列）
+        geo = data.get("geopolitics", {})
+        if geo.get("block_new_entries", False):
+            notes.append(f"🌍 地缘政治 BLOCK_NEW_ENTRIES: {geo.get('reason', '')}")
+            return MacroState.REDUCE_RISK, notes
+        if geo.get("reduce_risk", False):
+            notes.append(f"🌍 地缘政治 REDUCE_RISK: {geo.get('reason', '')}")
+            return MacroState.REDUCE_RISK, notes
+
+        # 3. 检查即将发生的事件
         upcoming = macro.get("upcoming_events", [])
         for event in upcoming:
             event_date = event.get("date", "")
@@ -705,10 +715,24 @@ class ResearchOutputAgent:
     def generate_json_report(self, report: ResearchReport, date_str: str) -> str:
         filepath = f"{self.base_dir}/daily/{date_str}_candidates.json"
         
+        event_overlay = {}
+        try:
+            event_overlay = json.loads(Path("event_signals.json").read_text(encoding="utf-8"))
+        except Exception:
+            event_overlay = {}
+
         report_dict = {
             "date": report.date,
             "generated_at": report.generated_at,
             "data_window": report.data_window,
+            "market_bias": event_overlay.get("market_bias", "NEUTRAL"),
+            "risk_mode": event_overlay.get("risk_mode", "NORMAL"),
+            "macro": event_overlay.get("macro", {}),
+            "geopolitics": event_overlay.get("geopolitics", {}),
+            "sentiment": event_overlay.get("sentiment", {}),
+            "whale_score": event_overlay.get("whale", {}).get("whale_score", 0.0),
+            "whale_bias": event_overlay.get("whale", {}).get("whale_bias", "NEUTRAL"),
+            "whale_reason": event_overlay.get("whale", {}).get("whale_reason", ""),
             "macro_state": report.macro_state,
             "pool_status": report.pool_status,
             "top_candidates": report.top_candidates,
@@ -739,6 +763,9 @@ class ResearchOutputAgent:
                 "whale_bias": sym.whale_bias,
                 "whale_reason": sym.whale_reason,
                 "whale_adjustment": sym.whale_adjustment,
+                "bias": event_overlay.get("symbols", {}).get(sym.symbol, {}).get("bias", "NEUTRAL"),
+                "strength": event_overlay.get("symbols", {}).get(sym.symbol, {}).get("strength", "LOW"),
+                "recommended_action": event_overlay.get("symbols", {}).get(sym.symbol, {}).get("recommended_action", "WAIT"),
                 "reasons": sym.decision_reasons,
                 "news_signals": sym.news_signals,
                 "has_major_event": sym.has_major_event,
@@ -753,11 +780,19 @@ class ResearchOutputAgent:
     def generate_markdown_summary(self, report: ResearchReport, date_str: str) -> str:
         filepath = f"{self.base_dir}/daily/{date_str}_summary.md"
         
+        overlay = {}
+        try:
+            overlay = json.loads(Path("event_signals.json").read_text(encoding="utf-8"))
+        except Exception:
+            overlay = {}
+
         lines = [
             f"# 高波动池研究报告 - {date_str}",
             "",
             f"生成时间: {report.generated_at}",
             f"数据窗口: {report.data_window}",
+            f"市场偏向: {overlay.get('market_bias', 'NEUTRAL')}",
+            f"风险模式: {overlay.get('risk_mode', 'NORMAL')}",
             "",
             "## 今日宏观风险",
             "",
@@ -860,6 +895,75 @@ class HighVolPoolResearchAgent:
         self.scoring_agent = ScoringAgent()
         self.output_agent = ResearchOutputAgent()
         self.archive_agent = ArchiveAgent()
+
+    def _latest_trade_research(self) -> dict:
+        try:
+            p = Path("research/news/daily")
+            files = sorted(p.glob("*_trade_research.json"))
+            if not files:
+                return {}
+            return json.loads(files[-1].read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def _sync_event_signals(self, report: ResearchReport):
+        """把研究层关键字段写回 event_signals.json，供执行层读取。"""
+        path = Path("event_signals.json")
+        if not path.exists():
+            return
+
+        data = json.loads(path.read_text(encoding="utf-8"))
+        tr = self._latest_trade_research()
+
+        data["market_bias"] = tr.get("market_bias", "NEUTRAL")
+        data["risk_mode"] = tr.get("risk_mode", "NORMAL")
+        data["macro"] = data.get("macro", {})
+        if report.macro_state == MacroState.REDUCE_RISK.value:
+            data["risk_mode"] = "REDUCE_RISK"
+            data["macro"]["reduce_risk"] = True
+        elif report.macro_state == MacroState.BLOCK.value:
+            data["risk_mode"] = "BLOCK"
+            data["macro"]["block"] = True
+        data["geopolitics"] = tr.get("geopolitics", data.get("geopolitics", {
+            "reduce_risk": False,
+            "block_new_entries": False,
+            "alts_bias": "NEUTRAL",
+            "reason": "No major geopolitical escalation",
+        }))
+        data["sentiment"] = tr.get("sentiment", {
+            "bias": "NEUTRAL",
+            "strength": "LOW",
+            "recommended_action": "WAIT",
+            "reason": "not available",
+        })
+
+        data.setdefault("whale", {})
+        data["whale"]["whale_score"] = tr.get("whale_score", data["whale"].get("whale_score", 0.0))
+        data["whale"]["whale_bias"] = tr.get("whale_bias", data["whale"].get("whale_bias", "NEUTRAL"))
+        data["whale"]["whale_reason"] = tr.get("whale_reason", data["whale"].get("whale_reason", "No validated smart-money signal"))
+
+        sym_map = {s.symbol: s for s in report.symbols}
+        data.setdefault("symbols", {})
+        for sym in POOL_SYMBOLS_RAW:
+            data["symbols"].setdefault(sym, {})
+            sr = sym_map.get(sym)
+            if sr:
+                bias = "LONG" if sr.trend_4h == "UP" else "SHORT" if sr.trend_4h == "DOWN" else "NEUTRAL"
+                strength = "HIGH" if sr.total_score >= 0.75 else "MEDIUM" if sr.total_score >= 0.55 else "LOW"
+                action = "WAIT"
+                if sr.decision == DecisionLabel.BLOCK.value:
+                    action = "BLOCK_NEW_ENTRIES"
+                elif sr.decision == DecisionLabel.REDUCE_RISK.value:
+                    action = "REDUCE_RISK"
+                elif bias in {"LONG", "SHORT"} and strength != "LOW":
+                    action = bias
+
+                data["symbols"][sym]["bias"] = bias
+                data["symbols"][sym]["strength"] = strength
+                data["symbols"][sym]["recommended_action"] = action
+
+        data["last_updated_utc"] = datetime.now(timezone.utc).isoformat()
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     
     def run_daily_research(self) -> ResearchReport:
         """执行每日研究流程"""
@@ -1033,6 +1137,10 @@ class HighVolPoolResearchAgent:
         print(f"  - JSON: {json_path}")
         print(f"  - Markdown: {md_path}")
         print(f"  - Archive: {archive_path}")
+
+        # 13. 同步关键研究字段到 event_signals.json（交易执行读取）
+        self._sync_event_signals(report)
+        print("  - Synced: event_signals.json")
         
         return report
 
