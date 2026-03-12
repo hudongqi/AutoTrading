@@ -27,8 +27,9 @@
 └─────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────┐
-│  输出层 (供人工审核)                                         │
+│  输出层 (供人工审核 + 交易研究)                              │
 │  ├── research/news/daily/YYYY-MM-DD_digest.json             │
+│  ├── research/news/daily/YYYY-MM-DD_trade_research.json     │
 │  └── research/news/daily/YYYY-MM-DD_summary.md              │
 └─────────────────────────────────────────────────────────────┘
                               ↓ (人工确认)
@@ -59,6 +60,12 @@
 | `impact_scope` | 影响范围 | single / sector / market |
 | `confidence` | 置信度 | 0.0 ~ 1.0 |
 | `related_symbols` | 相关币种 | ["SOLUSDT", "XRPUSDT"] |
+
+新增交易研究字段（`*_trade_research.json`）：
+
+- 宏观：`previous`、`forecast`、`market_bias`、`if_above_forecast`、`if_below_forecast`、`pre_event_action`、`post_event_action`
+- 币种：`bias`、`strength`、`reason`、`recommended_action`
+- 全局：`overall_recommendation`（LONG / SHORT / WAIT / REDUCE_RISK）
 
 ---
 
