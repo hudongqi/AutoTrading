@@ -116,6 +116,9 @@ def main():
     now = datetime.now(timezone.utc).isoformat()
     print(f"=== DAILY PIPELINE START {now} ===")
 
+    mode = "AUTO MODE" if args.auto else "MANUAL MODE"
+    print(f"[MODE] {mode}")
+
     run_cmd([PYTHON_BIN, "run_news_collection.py"])
     run_cmd([PYTHON_BIN, "run_whale_collection.py"])
 
