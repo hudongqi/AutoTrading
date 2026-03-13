@@ -1,6 +1,6 @@
 {
   "schema_version": "2.2",
-  "last_updated_utc": "2026-03-12T03:45:29.951256+00:00",
+  "last_updated_utc": "2026-03-13T06:06:45.071520+00:00",
   "market_bias": "NEUTRAL",
   "risk_mode": "REDUCE_RISK",
   "macro": {
@@ -36,7 +36,7 @@
     "enabled": true,
     "mode": "auxiliary",
     "note": "Only for sizing/confidence/candidate filtering, never standalone trade trigger.",
-    "last_updated_utc": "2026-03-12T03:44:46.272311+00:00",
+    "last_updated_utc": "2026-03-13T06:06:27.798448+00:00",
     "whale_score": 0.0,
     "whale_bias": "NEUTRAL",
     "whale_reason": "Aggregated from validated smart-money symbol signals"
@@ -50,7 +50,7 @@
       "whale_score": 0.0,
       "whale_bias": "NEUTRAL",
       "whale_reason": "No validated smart-money signal",
-      "bias": "SHORT",
+      "bias": "LONG",
       "strength": "LOW",
       "recommended_action": "BLOCK_NEW_ENTRIES"
     },
@@ -62,7 +62,7 @@
       "whale_score": 0.0,
       "whale_bias": "NEUTRAL",
       "whale_reason": "No validated smart-money signal",
-      "bias": "SHORT",
+      "bias": "LONG",
       "strength": "LOW",
       "recommended_action": "BLOCK_NEW_ENTRIES"
     },
@@ -74,7 +74,7 @@
       "whale_score": 0.0,
       "whale_bias": "NEUTRAL",
       "whale_reason": "No validated smart-money signal",
-      "bias": "SHORT",
+      "bias": "LONG",
       "strength": "LOW",
       "recommended_action": "BLOCK_NEW_ENTRIES"
     },
@@ -98,7 +98,7 @@
       "whale_score": 0.0,
       "whale_bias": "NEUTRAL",
       "whale_reason": "No validated smart-money signal",
-      "bias": "SHORT",
+      "bias": "LONG",
       "strength": "LOW",
       "recommended_action": "BLOCK_NEW_ENTRIES"
     }
