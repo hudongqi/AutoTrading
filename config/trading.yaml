@@ -1,0 +1,24 @@
+mode: paper
+exchange: binanceusdm
+timeframe: 1m
+symbols:
+  - BTCUSDT
+  - ETHUSDT
+  - SOLUSDT
+polling_interval_seconds: 30
+max_loops: 1
+
+# unified controls
+risk_per_trade: 0.01
+max_total_exposure: 0.30
+reduce_risk_factor: 0.5
+min_strength: MEDIUM
+require_technical_confirm: true
+
+allow_long: true
+allow_short: true
+allow_add_position: false
+max_positions: 3
+
+event_signals_path: event_signals.json
+audit_log: logs/trade_audit.jsonl

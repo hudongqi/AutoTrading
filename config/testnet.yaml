@@ -1,0 +1,6 @@
+use_testnet: true
+dry_run: false
+confirm_before_trade: false
+# read from env:
+# BINANCE_API_KEY
+# BINANCE_API_SECRET

@@ -1,0 +1,8 @@
+initial_cash: 10000
+fee_rate: 0.0005
+slippage_bps: 5
+fill_model: last_price_with_slippage
+state_path: state/paper_state.json
+use_testnet: false
+dry_run: true
+confirm_before_trade: false
