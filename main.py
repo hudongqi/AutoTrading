@@ -77,6 +77,8 @@ def run_case(
     risk_per_trade=0.0075,
     enable_risk_position_sizing=True,
     allow_reentry=True,
+    partial_take_R=0.0,
+    partial_take_frac=0.0,
     show_result_tail=False,
     debug_breakpoint=False,
     research_overlay=None,
@@ -115,6 +117,8 @@ def run_case(
         risk_per_trade=risk_per_trade,
         enable_risk_position_sizing=enable_risk_position_sizing,
         allow_reentry=allow_reentry,
+        partial_take_R=partial_take_R,
+        partial_take_frac=partial_take_frac,
     )
 
     result = bt.run(df_sig)
@@ -271,6 +275,26 @@ def main():
         take_R=2.6,
         trail_start_R=1.0,
         trail_atr=2.2,
+        show_result_tail=False,
+        debug_breakpoint=False,
+        research_overlay=overlay,
+    ))
+
+    reports.append(run_case(
+        "LIVE_LIKE_PULLBACK_RISK_V5_LONG_PARTIAL",
+        df_sig_v4,
+        strat_v4,
+        entry_is_maker=False,
+        funding_rate_per_8h=FUNDING_RATE_PER_8H,
+        leverage=2.0,
+        max_pos=0.8,
+        cooldown_bars=3,
+        stop_atr=1.4,
+        take_R=2.6,
+        trail_start_R=1.0,
+        trail_atr=2.2,
+        partial_take_R=1.5,
+        partial_take_frac=0.5,
         show_result_tail=True,
         debug_breakpoint=False,
         research_overlay=overlay,

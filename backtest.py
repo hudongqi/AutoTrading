@@ -28,6 +28,8 @@ class Backtester:
         risk_per_trade: float = 0.0075,
         enable_risk_position_sizing: bool = True,
         allow_reentry: bool = True,
+        partial_take_R: float = 0.0,
+        partial_take_frac: float = 0.0,
     ):
         self.broker = broker
         self.portfolio = portfolio
@@ -45,11 +47,14 @@ class Backtester:
         self.risk_per_trade = float(risk_per_trade)
         self.enable_risk_position_sizing = bool(enable_risk_position_sizing)
         self.allow_reentry = bool(allow_reentry)
+        self.partial_take_R = float(partial_take_R)
+        self.partial_take_frac = float(partial_take_frac)
 
         self.cur_stop = None
         self.cur_take = None
         self.entry_price = None
         self.entry_risk = None
+        self.partial_taken = False
 
         self.trade_count = 0
         self.reversal_count = 0
@@ -194,6 +199,27 @@ class Backtester:
 
             self.cur_stop = min(self.cur_stop, new_stop)
 
+    def _partial_take(self, exit_mid_price: float, frac: float, reason: str) -> dict:
+        st = self.portfolio.state
+        if st.position == 0 or frac <= 0 or frac >= 1:
+            return {"exit_reason": None, "exit_price": np.nan, "realized": 0.0}
+
+        qty_to_close = -st.position * frac
+        fill = self.broker.fill_price(exit_mid_price, qty_to_close)
+        fill_info = self.portfolio.apply_fill(fill_price=fill, qty=qty_to_close, is_maker=False)
+        self.trade_count += 1
+
+        if self.current_trade is not None:
+            self.current_trade["fee_accum"] = self.current_trade.get("fee_accum", 0.0) + float(fill_info.get("fee", 0.0))
+            self.current_trade.setdefault("partial_exits", []).append({
+                "reason": reason,
+                "price": float(fill),
+                "qty": float(qty_to_close),
+                "realized_gross": float(fill_info.get("realized", 0.0)),
+            })
+
+        return {"exit_reason": reason, "exit_price": float(fill), "realized": float(fill_info.get("realized", 0.0))}
+
     def _close_position(self, exit_mid_price: float, reason: str) -> dict:
         """用 portfolio.apply_fill 平仓，并返回事件信息。"""
         st = self.portfolio.state
@@ -227,6 +253,7 @@ class Backtester:
         self.cur_stop, self.cur_take = None, None
         self.entry_price = None
         self.entry_risk = None
+        self.partial_taken = False
 
         return {"exit_reason": reason, "exit_price": float(fill)}
 
@@ -270,6 +297,8 @@ class Backtester:
                 if side == 1:
                     hit_stop = low <= self.cur_stop # 止损线
                     hit_take = high >= self.cur_take
+                    partial_take_price = self.entry_price + self.partial_take_R * self.entry_risk if (self.entry_price is not None and self.entry_risk is not None and self.partial_take_R > 0) else None
+                    hit_partial = (not self.partial_taken) and (partial_take_price is not None) and (high >= partial_take_price)
 
                     # 同根同时触发：保守先止损
                     if hit_stop:
@@ -277,6 +306,10 @@ class Backtester:
                         exit_reason, exit_price = evt["exit_reason"], evt["exit_price"]
                         if exit_reason is not None:
                             last_exit_idx = i
+                    elif hit_partial and self.partial_take_frac > 0:
+                        evt = self._partial_take(exit_mid_price=partial_take_price, frac=self.partial_take_frac, reason="PARTIAL_TAKE")
+                        self.partial_taken = True
+                        self.cur_stop = max(self.cur_stop, self.entry_price)
                     elif hit_take:
                         evt = self._close_position(exit_mid_price=self.cur_take, reason="TAKE")
                         exit_reason, exit_price = evt["exit_reason"], evt["exit_price"]
@@ -286,12 +319,18 @@ class Backtester:
                 else:
                     hit_stop = high >= self.cur_stop
                     hit_take = low <= self.cur_take
+                    partial_take_price = self.entry_price - self.partial_take_R * self.entry_risk if (self.entry_price is not None and self.entry_risk is not None and self.partial_take_R > 0) else None
+                    hit_partial = (not self.partial_taken) and (partial_take_price is not None) and (low <= partial_take_price)
 
                     if hit_stop:
                         evt = self._close_position(exit_mid_price=self.cur_stop, reason="STOP")
                         exit_reason, exit_price = evt["exit_reason"], evt["exit_price"]
                         if exit_reason is not None:
                             last_exit_idx = i
+                    elif hit_partial and self.partial_take_frac > 0:
+                        evt = self._partial_take(exit_mid_price=partial_take_price, frac=self.partial_take_frac, reason="PARTIAL_TAKE")
+                        self.partial_taken = True
+                        self.cur_stop = min(self.cur_stop, self.entry_price)
                     elif hit_take:
                         evt = self._close_position(exit_mid_price=self.cur_take, reason="TAKE")
                         exit_reason, exit_price = evt["exit_reason"], evt["exit_price"]
@@ -375,6 +414,7 @@ class Backtester:
                         self.entry_price = float(fill)
                         self._set_brackets(entry_price=float(fill), atr=atr, side=side, res7=res7, sup7=sup7)
                         self.entry_risk = abs(self.entry_price - self.cur_stop) if self.cur_stop is not None else None
+                        self.partial_taken = False
                         self.current_trade = {
                             "entry_time": ts,
                             "entry_index": i,
