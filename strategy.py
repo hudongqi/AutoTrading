@@ -158,6 +158,11 @@ class BTCPerpPullbackStrategy1H:
         pullback_bars=3,
         pullback_max_depth_atr=0.45,
         first_pullback_only=True,
+        max_pullbacks_long=1,
+        max_pullbacks_short=1,
+        rejection_wick_ratio_long=0.8,
+        rejection_wick_ratio_short=0.8,
+        allow_short=True,
         allow_same_bar_entry=False,
         atr_period=14,
         atr_pct_low=0.0035,
@@ -176,6 +181,11 @@ class BTCPerpPullbackStrategy1H:
         self.pullback_bars = pullback_bars
         self.pullback_max_depth_atr = pullback_max_depth_atr
         self.first_pullback_only = first_pullback_only
+        self.max_pullbacks_long = max_pullbacks_long
+        self.max_pullbacks_short = max_pullbacks_short
+        self.rejection_wick_ratio_long = rejection_wick_ratio_long
+        self.rejection_wick_ratio_short = rejection_wick_ratio_short
+        self.allow_short = allow_short
         self.allow_same_bar_entry = allow_same_bar_entry
         self.atr_period = atr_period
         self.atr_pct_low = atr_pct_low
@@ -232,7 +242,8 @@ class BTCPerpPullbackStrategy1H:
 
         out["state_signal"] = 0
         out.loc[(out["ma_fast_4h"] > out["ma_slow_4h"]) & out["regime_ok"], "state_signal"] = 1
-        out.loc[(out["ma_fast_4h"] < out["ma_slow_4h"]) & out["regime_ok"], "state_signal"] = -1
+        if self.allow_short:
+            out.loc[(out["ma_fast_4h"] < out["ma_slow_4h"]) & out["regime_ok"], "state_signal"] = -1
 
         out["resistance_7d"] = out["high"].rolling(self.breakout_window, min_periods=self.breakout_window).quantile(0.975)
         out["support_7d"] = out["low"].rolling(self.breakout_window, min_periods=self.breakout_window).quantile(0.025)
@@ -246,8 +257,8 @@ class BTCPerpPullbackStrategy1H:
 
         lower_wick = (out[["open", "close"]].min(axis=1) - out["low"]).clip(lower=0)
         upper_wick = (out["high"] - out[["open", "close"]].max(axis=1)).clip(lower=0)
-        out["reject_long"] = (out["close"] > out["open"]) & (lower_wick >= body * 0.8)
-        out["reject_short"] = (out["close"] < out["open"]) & (upper_wick >= body * 0.8)
+        out["reject_long"] = (out["close"] > out["open"]) & (lower_wick >= body * self.rejection_wick_ratio_long)
+        out["reject_short"] = (out["close"] < out["open"]) & (upper_wick >= body * self.rejection_wick_ratio_short)
         out["rejection_type_long"] = np.where(out["reject_long"], "wick_reject_long", "none")
         out["rejection_type_short"] = np.where(out["reject_short"], "wick_reject_short", "none")
 
@@ -314,7 +325,8 @@ class BTCPerpPullbackStrategy1H:
                         l_touch_count += 1
                         first_pb_l[i] = (l_touch_count == 1)
 
-                    first_ok = (l_touch_count == 1) if self.first_pullback_only else True
+                    max_pb_long = 1 if self.first_pullback_only else self.max_pullbacks_long
+                    first_ok = l_touch_count <= max_pb_long
                     reject_ok = bool(out.iloc[i]["reject_long"])
                     state_ok = int(out.iloc[i]["state_signal"]) == 1
 
@@ -344,7 +356,8 @@ class BTCPerpPullbackStrategy1H:
                         s_touch_count += 1
                         first_pb_s[i] = (s_touch_count == 1)
 
-                    first_ok = (s_touch_count == 1) if self.first_pullback_only else True
+                    max_pb_short = 1 if self.first_pullback_only else self.max_pullbacks_short
+                    first_ok = s_touch_count <= max_pb_short
                     reject_ok = bool(out.iloc[i]["reject_short"])
                     state_ok = int(out.iloc[i]["state_signal"]) == -1
 
