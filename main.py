@@ -5,7 +5,7 @@ import pandas as pd
 
 from config import *
 from data import CCXTDataSource
-from strategy import BTCPerpTrendStrategy1H
+from strategy import BTCPerpTrendStrategy1H, BTCPerpPullbackStrategy1H
 from portfolio import PerpPortfolio
 from broker import SimBroker
 from backtest import Backtester
@@ -73,6 +73,9 @@ def run_case(
     take_R=3.5,
     trail_start_R=1.5,
     trail_atr=2.0,
+    risk_per_trade=0.0075,
+    enable_risk_position_sizing=True,
+    allow_reentry=True,
     show_result_tail=False,
     debug_breakpoint=False,
     research_overlay=None,
@@ -108,6 +111,9 @@ def run_case(
         check_liq=True,
         entry_is_maker=entry_is_maker,
         funding_rate_per_8h=funding_rate_per_8h,
+        risk_per_trade=risk_per_trade,
+        enable_risk_position_sizing=enable_risk_position_sizing,
+        allow_reentry=allow_reentry,
     )
 
     result = bt.run(df_sig)
@@ -131,10 +137,14 @@ def run_case(
     print("win_rate:", f"{stats.get('win_rate', 0.0):.2%}")
 
     pnl_ratio = stats.get("pnl_ratio", float("nan"))
-    if pd.notna(pnl_ratio):
-        print("pnl_ratio:", f"{pnl_ratio:.2f}")
-    else:
-        print("pnl_ratio: N/A")
+    print("pnl_ratio:", f"{pnl_ratio:.2f}" if pd.notna(pnl_ratio) else "N/A")
+    print("expectancy_per_trade:", f"{stats.get('expectancy_per_trade', 0.0):.4f}")
+    pf = stats.get("profit_factor", float("nan"))
+    print("profit_factor:", f"{pf:.2f}" if pd.notna(pf) else "N/A")
+    print("avg_holding_bars:", f"{stats.get('avg_holding_bars', 0.0):.2f}")
+    print("time_in_market:", f"{stats.get('time_in_market', 0.0):.2%}")
+    print("long_short_split:", stats.get("long_short_split", {}))
+    print("mfe_avg:", f"{stats.get('mfe_avg', 0.0):.2f}", "mae_avg:", f"{stats.get('mae_avg', 0.0):.2f}")
 
 
 def main():
@@ -143,15 +153,19 @@ def main():
 
     overlay = load_research_overlay("event_signals.json")
 
-    # 仅保留一版：最接近线上真实执行环境
-    # - 开平仓统一按 taker 成本
-    # - 启用 funding 成本模拟
-    # - 启用研究层风险覆盖（block/reduce_risk）
-    strat = BTCPerpTrendStrategy1H(fast=5, slow=15)
+    # 升级版：突破确认 + 回踩再进 + 风险仓位 sizing + 二次入场
+    strat = BTCPerpPullbackStrategy1H(
+        adx_threshold_4h=30,
+        trend_strength_threshold_4h=0.006,
+        breakout_confirm_atr=0.15,
+        pullback_bars=3,
+        atr_pct_low=0.0035,
+        atr_pct_high=0.015,
+    )
     df_sig = strat.generate_signals(df)
 
     run_case(
-        "LIVE_LIKE_V1",
+        "LIVE_LIKE_PULLBACK_RISK_V2",
         df_sig,
         strat,
         entry_is_maker=False,
@@ -159,10 +173,10 @@ def main():
         leverage=2.0,
         max_pos=0.8,
         cooldown_bars=3,
-        stop_atr=1.5,
-        take_R=3.5,
-        trail_start_R=1.5,
-        trail_atr=2.0,
+        stop_atr=1.4,
+        take_R=2.6,
+        trail_start_R=1.0,
+        trail_atr=2.2,
         show_result_tail=True,
         debug_breakpoint=False,
         research_overlay=overlay,

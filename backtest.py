@@ -25,6 +25,9 @@ class Backtester:
         check_liq: bool = True,  # 是否做简化爆仓检查
         entry_is_maker: bool = False,
         funding_rate_per_8h: float = 0.0,
+        risk_per_trade: float = 0.0075,
+        enable_risk_position_sizing: bool = True,
+        allow_reentry: bool = True,
     ):
         self.broker = broker
         self.portfolio = portfolio
@@ -39,6 +42,9 @@ class Backtester:
         self.check_liq = bool(check_liq)
         self.entry_is_maker = bool(entry_is_maker)
         self.funding_rate_per_8h = float(funding_rate_per_8h)
+        self.risk_per_trade = float(risk_per_trade)
+        self.enable_risk_position_sizing = bool(enable_risk_position_sizing)
+        self.allow_reentry = bool(allow_reentry)
 
         self.cur_stop = None
         self.cur_take = None
@@ -48,6 +54,8 @@ class Backtester:
         self.trade_count = 0
         self.reversal_count = 0
         self.closed_trade_pnls = []
+        self.closed_trades = []
+        self.current_trade = None
 
 
     def _set_brackets(self, entry_price: float, atr: float, side: int,
@@ -89,6 +97,58 @@ class Backtester:
 
         self.cur_stop = float(stop)
         self.cur_take = float(take)
+
+    def _estimate_entry_stop(self, entry_price: float, atr: float, side: int, res7: float, sup7: float) -> float:
+        if atr is None or np.isnan(atr) or atr <= 0:
+            return np.nan
+        struct_buf = 0.25 * atr
+        if side == 1:
+            stop_atr = entry_price - self.stop_atr * atr
+            stop_struct = (sup7 - struct_buf) if np.isfinite(sup7) else -np.inf
+            stop = max(stop_atr, stop_struct)
+        else:
+            stop_atr = entry_price + self.stop_atr * atr
+            stop_struct = (res7 + struct_buf) if np.isfinite(res7) else np.inf
+            stop = min(stop_atr, stop_struct)
+        return float(stop)
+
+    def _risk_based_target(self, side: int, price: float, atr: float, res7: float, sup7: float) -> float:
+        # 返回目标仓位（带方向）
+        margin_cap = min(self.max_pos, self.portfolio.max_qty_by_margin(price))
+        if margin_cap <= 0:
+            return 0.0
+        if not self.enable_risk_position_sizing:
+            return margin_cap * side
+
+        eq = self.portfolio.equity(price)
+        if eq <= 0:
+            return 0.0
+
+        est_stop = self._estimate_entry_stop(price, atr, side, res7, sup7)
+        if not np.isfinite(est_stop):
+            return 0.0
+        stop_dist = abs(price - est_stop)
+        if stop_dist <= 0:
+            return 0.0
+
+        risk_budget = eq * self.risk_per_trade
+        qty_by_risk = risk_budget / stop_dist
+        qty = min(margin_cap, qty_by_risk)
+        return qty * side
+
+    def _update_trade_excursions(self, high: float, low: float):
+        if not self.current_trade:
+            return
+        entry = self.current_trade["entry_price"]
+        side = self.current_trade["side"]
+        if side == 1:
+            mfe = high - entry
+            mae = entry - low
+        else:
+            mfe = entry - low
+            mae = high - entry
+        self.current_trade["mfe"] = max(self.current_trade.get("mfe", 0.0), float(mfe))
+        self.current_trade["mae"] = max(self.current_trade.get("mae", 0.0), float(mae))
 
     def _update_trailing_stop(self, close: float, atr: float, side: int,
                               res7: float = np.nan, sup7: float = np.nan):
@@ -145,8 +205,20 @@ class Backtester:
         # 记账（手续费 + realized pnl 由 portfolio 处理）
         fill_info = self.portfolio.apply_fill(fill_price=fill, qty=qty_to_close, is_maker=False)
         self.trade_count += 1
-        if fill_info and fill_info.get("realized", 0.0) != 0:
-            self.closed_trade_pnls.append(float(fill_info["realized"]))
+        realized = float(fill_info.get("realized", 0.0)) if fill_info else 0.0
+        if realized != 0:
+            self.closed_trade_pnls.append(realized)
+
+        # 记录交易明细（MFE/MAE/持仓时长）
+        if self.current_trade is not None:
+            tr = dict(self.current_trade)
+            tr.update({
+                "exit_reason": reason,
+                "exit_price": float(fill),
+                "realized": realized,
+            })
+            self.closed_trades.append(tr)
+            self.current_trade = None
 
         # 平仓后清空风控线
         self.cur_stop, self.cur_take = None, None
@@ -168,6 +240,11 @@ class Backtester:
 
             st = self.portfolio.state
             pos = float(st.position)
+
+            # 记录持仓过程指标
+            if pos != 0 and self.current_trade is not None:
+                self.current_trade["holding_bars"] = self.current_trade.get("holding_bars", 0) + 1
+                self._update_trade_excursions(high=high, low=low)
 
             exit_reason = None
             exit_price = np.nan
@@ -244,69 +321,66 @@ class Backtester:
             st = self.portfolio.state
             pos = float(st.position)
 
-            # ========== B) 再处理交易信号（事件驱动） ==========
-            trade_sig = float(row["trade_signal"])
-            signal = int(row["signal"])
+            # ========== B) 再处理交易信号（支持二次入场） ==========
+            trade_sig = float(row.get("trade_signal", 0.0))
+            signal = int(row.get("signal", 0))
+            entry_setup = int(row.get("entry_setup", 0))
             in_cooldown = (i - last_exit_idx) < self.cooldown_bars
 
-            if trade_sig != 0:
-                st = self.portfolio.state
-                current_pos = float(st.position)
+            # 若策略提供 entry_setup，用它作为入场触发；否则退回 trade_signal
+            entry_trigger = entry_setup if "entry_setup" in row else (signal if trade_sig != 0 else 0)
 
-                # A版：禁止直接反手
-                if signal == 1:
-                    if current_pos < 0:
-                        self.reversal_count += 1
-                        bar_reversal = True
-                        evt = self._close_position(exit_mid_price=close, reason="SIG_CLOSE_SHORT")
-                        if evt["exit_reason"] is not None:
-                            exit_reason, exit_price = evt["exit_reason"], evt["exit_price"]
-                            last_exit_idx = i
-                    elif current_pos == 0 and not in_cooldown:
-                        target = self.max_pos
-                        order_qty = float(self.portfolio.target_position(target, close))
-                        if order_qty != 0:
-                            fill = self.broker.fill_price(close, order_qty)
-                            fill_info = self.portfolio.apply_fill(fill_price=fill, qty=order_qty, is_maker=self.entry_is_maker)
-                            self.trade_count += 1
-                            bar_order_qty = float(order_qty)
-                            bar_fee += float(fill_info.get("fee", 0.0)) if fill_info else 0.0
+            st = self.portfolio.state
+            current_pos = float(st.position)
 
-                            st = self.portfolio.state
-                            if st.position != 0:
-                                self.entry_price = float(fill)
-                                side = 1
-                                res7 = float(row.get("resistance_7d", np.nan))
-                                sup7 = float(row.get("support_7d", np.nan))
-                                self._set_brackets(entry_price=float(fill), atr=atr, side=side, res7=res7, sup7=sup7)
-                                self.entry_risk = abs(self.entry_price - self.cur_stop) if self.cur_stop is not None else None
+            # 趋势反向先平仓
+            if signal == 1 and current_pos < 0:
+                self.reversal_count += 1
+                bar_reversal = True
+                evt = self._close_position(exit_mid_price=close, reason="SIG_CLOSE_SHORT")
+                if evt["exit_reason"] is not None:
+                    exit_reason, exit_price = evt["exit_reason"], evt["exit_price"]
+                    last_exit_idx = i
+                current_pos = float(self.portfolio.state.position)
 
-                elif signal == -1:
-                    if current_pos > 0:
-                        self.reversal_count += 1
-                        bar_reversal = True
-                        evt = self._close_position(exit_mid_price=close, reason="SIG_CLOSE_LONG")
-                        if evt["exit_reason"] is not None:
-                            exit_reason, exit_price = evt["exit_reason"], evt["exit_price"]
-                            last_exit_idx = i
-                    elif current_pos == 0 and not in_cooldown:
-                        target = -self.max_pos
-                        order_qty = float(self.portfolio.target_position(target, close))
-                        if order_qty != 0:
-                            fill = self.broker.fill_price(close, order_qty)
-                            fill_info = self.portfolio.apply_fill(fill_price=fill, qty=order_qty, is_maker=self.entry_is_maker)
-                            self.trade_count += 1
-                            bar_order_qty = float(order_qty)
-                            bar_fee += float(fill_info.get("fee", 0.0)) if fill_info else 0.0
+            elif signal == -1 and current_pos > 0:
+                self.reversal_count += 1
+                bar_reversal = True
+                evt = self._close_position(exit_mid_price=close, reason="SIG_CLOSE_LONG")
+                if evt["exit_reason"] is not None:
+                    exit_reason, exit_price = evt["exit_reason"], evt["exit_price"]
+                    last_exit_idx = i
+                current_pos = float(self.portfolio.state.position)
 
-                            st = self.portfolio.state
-                            if st.position != 0:
-                                self.entry_price = float(fill)
-                                side = -1
-                                res7 = float(row.get("resistance_7d", np.nan))
-                                sup7 = float(row.get("support_7d", np.nan))
-                                self._set_brackets(entry_price=float(fill), atr=atr, side=side, res7=res7, sup7=sup7)
-                                self.entry_risk = abs(self.entry_price - self.cur_stop) if self.cur_stop is not None else None
+            can_reenter = self.allow_reentry or trade_sig != 0
+            if current_pos == 0 and (not in_cooldown) and can_reenter and entry_trigger != 0:
+                side = 1 if entry_trigger > 0 else -1
+                res7 = float(row.get("resistance_7d", np.nan))
+                sup7 = float(row.get("support_7d", np.nan))
+                target = self._risk_based_target(side=side, price=close, atr=atr, res7=res7, sup7=sup7)
+                order_qty = float(self.portfolio.target_position(target, close))
+
+                if order_qty != 0:
+                    fill = self.broker.fill_price(close, order_qty)
+                    fill_info = self.portfolio.apply_fill(fill_price=fill, qty=order_qty, is_maker=self.entry_is_maker)
+                    self.trade_count += 1
+                    bar_order_qty = float(order_qty)
+                    bar_fee += float(fill_info.get("fee", 0.0)) if fill_info else 0.0
+
+                    st = self.portfolio.state
+                    if st.position != 0:
+                        self.entry_price = float(fill)
+                        self._set_brackets(entry_price=float(fill), atr=atr, side=side, res7=res7, sup7=sup7)
+                        self.entry_risk = abs(self.entry_price - self.cur_stop) if self.cur_stop is not None else None
+                        self.current_trade = {
+                            "entry_time": ts,
+                            "entry_index": i,
+                            "entry_price": self.entry_price,
+                            "side": side,
+                            "holding_bars": 0,
+                            "mfe": 0.0,
+                            "mae": 0.0,
+                        }
 
             # ========== B2) Funding 成本/收益模拟 ==========
             funding_cashflow = 0.0
@@ -382,6 +456,23 @@ class Backtester:
         win_rate = (len(wins) / len(self.closed_trade_pnls)) if self.closed_trade_pnls else 0.0
         pnl_ratio = (np.mean(wins) / abs(np.mean(losses))) if wins and losses else np.nan
 
+        expectancy = float(np.mean(self.closed_trade_pnls)) if self.closed_trade_pnls else 0.0
+        gross_profit = float(np.sum(wins)) if wins else 0.0
+        gross_loss = abs(float(np.sum(losses))) if losses else 0.0
+        profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else np.nan
+        avg_holding_bars = float(np.mean([t.get("holding_bars", 0) for t in self.closed_trades])) if self.closed_trades else 0.0
+        time_in_market = float((out["position"].abs() > 0).mean()) if len(out) else 0.0
+
+        long_trades = [t for t in self.closed_trades if t.get("side") == 1]
+        short_trades = [t for t in self.closed_trades if t.get("side") == -1]
+        long_short_split = {
+            "long_count": len(long_trades),
+            "short_count": len(short_trades),
+        }
+
+        mfe_avg = float(np.mean([t.get("mfe", 0.0) for t in self.closed_trades])) if self.closed_trades else 0.0
+        mae_avg = float(np.mean([t.get("mae", 0.0) for t in self.closed_trades])) if self.closed_trades else 0.0
+
         out.attrs["stats"] = {
             "trade_count": int(self.trade_count),
             "total_fees": float(self.portfolio.state.fee_paid),
@@ -389,6 +480,13 @@ class Backtester:
             "reversal_count": int(self.reversal_count),
             "win_rate": float(win_rate),
             "pnl_ratio": float(pnl_ratio) if pd.notna(pnl_ratio) else np.nan,
+            "expectancy_per_trade": expectancy,
+            "profit_factor": float(profit_factor) if pd.notna(profit_factor) else np.nan,
+            "avg_holding_bars": avg_holding_bars,
+            "time_in_market": time_in_market,
+            "long_short_split": long_short_split,
+            "mfe_avg": mfe_avg,
+            "mae_avg": mae_avg,
         }
 
         return out
