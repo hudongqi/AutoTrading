@@ -56,6 +56,7 @@ class Backtester:
         self.closed_trade_pnls = []
         self.closed_trades = []
         self.current_trade = None
+        self.rejected_entries = []
 
 
     def _set_brackets(self, entry_price: float, atr: float, side: int,
@@ -206,8 +207,6 @@ class Backtester:
         fill_info = self.portfolio.apply_fill(fill_price=fill, qty=qty_to_close, is_maker=False)
         self.trade_count += 1
         realized = float(fill_info.get("realized", 0.0)) if fill_info else 0.0
-        if realized != 0:
-            self.closed_trade_pnls.append(realized)
 
         # 记录交易明细（MFE/MAE/持仓时长）
         if self.current_trade is not None:
@@ -215,8 +214,12 @@ class Backtester:
             tr.update({
                 "exit_reason": reason,
                 "exit_price": float(fill),
-                "realized": realized,
+                "realized_gross": realized,
             })
+            tr_fee = float(tr.get("fee_accum", 0.0))
+            tr_funding = float(tr.get("funding_accum", 0.0))
+            tr["realized_net"] = realized - tr_fee + tr_funding
+            self.closed_trade_pnls.append(float(tr["realized_net"]))
             self.closed_trades.append(tr)
             self.current_trade = None
 
@@ -380,13 +383,52 @@ class Backtester:
                             "holding_bars": 0,
                             "mfe": 0.0,
                             "mae": 0.0,
+                            "fee_accum": float(fill_info.get("fee", 0.0)) if fill_info else 0.0,
+                            "funding_accum": 0.0,
+                            "entry_atr": float(atr) if pd.notna(atr) else np.nan,
+                            "entry_adx_4h": float(row.get("adx_4h", np.nan)),
+                            "entry_regime_ok": bool(row.get("regime_ok", True)),
+                            "entry_pullback_depth": float(row.get("pullback_depth_long", np.nan) if side == 1 else row.get("pullback_depth_short", np.nan)),
+                            "entry_breakout_quality": bool(row.get("breakout_quality_long", False) if side == 1 else row.get("breakout_quality_short", False)),
                         }
+            elif current_pos == 0 and (not in_cooldown) and signal != 0 and entry_trigger == 0:
+                reject_reason = []
+                if not bool(row.get("regime_ok", True)):
+                    reject_reason.append("regime_not_ok")
+                if signal == 1:
+                    if not bool(row.get("breakout_quality_long", False)):
+                        reject_reason.append("breakout_quality_long_fail")
+                    if not bool(row.get("pullback_depth_ok_long", True)):
+                        reject_reason.append("pullback_too_deep_long")
+                    if not bool(row.get("reject_long", False)):
+                        reject_reason.append("rejection_long_fail")
+                    if not bool(row.get("first_pullback_ok_long", True)):
+                        reject_reason.append("not_first_pullback_long")
+                elif signal == -1:
+                    if not bool(row.get("breakout_quality_short", False)):
+                        reject_reason.append("breakout_quality_short_fail")
+                    if not bool(row.get("pullback_depth_ok_short", True)):
+                        reject_reason.append("pullback_too_deep_short")
+                    if not bool(row.get("reject_short", False)):
+                        reject_reason.append("rejection_short_fail")
+                    if not bool(row.get("first_pullback_ok_short", True)):
+                        reject_reason.append("not_first_pullback_short")
+                self.rejected_entries.append({
+                    "time": ts,
+                    "signal": signal,
+                    "adx_4h": float(row.get("adx_4h", np.nan)),
+                    "reasons": reject_reason,
+                    "pullback_depth_long": float(row.get("pullback_depth_long", np.nan)),
+                    "pullback_depth_short": float(row.get("pullback_depth_short", np.nan)),
+                })
 
             # ========== B2) Funding 成本/收益模拟 ==========
             funding_cashflow = 0.0
             if self.funding_rate_per_8h != 0.0:
                 funding_rate_bar = self.funding_rate_per_8h / 8.0  # 1h bar 折算
                 funding_cashflow = self.portfolio.apply_funding(mark_price=close, funding_rate=funding_rate_bar)
+                if self.current_trade is not None:
+                    self.current_trade["funding_accum"] = self.current_trade.get("funding_accum", 0.0) + float(funding_cashflow)
 
             # ========== C) 持仓期间追踪止损 ==========
             trailing_active = False
@@ -465,16 +507,61 @@ class Backtester:
 
         long_trades = [t for t in self.closed_trades if t.get("side") == 1]
         short_trades = [t for t in self.closed_trades if t.get("side") == -1]
-        long_short_split = {
-            "long_count": len(long_trades),
-            "short_count": len(short_trades),
-        }
+
+        def side_stats(trades):
+            if not trades:
+                return {
+                    "count": 0, "win_rate": 0.0, "profit_factor": np.nan, "expectancy": 0.0,
+                    "avg_pnl": 0.0, "avg_mfe": 0.0, "avg_mae": 0.0, "avg_holding_bars": 0.0,
+                }
+            pnls = [float(t.get("realized_net", 0.0)) for t in trades]
+            w = [x for x in pnls if x > 0]; l = [x for x in pnls if x < 0]
+            pf = (sum(w) / abs(sum(l))) if l else np.nan
+            return {
+                "count": len(trades),
+                "win_rate": len(w) / len(trades),
+                "profit_factor": pf,
+                "expectancy": float(np.mean(pnls)),
+                "avg_pnl": float(np.mean(pnls)),
+                "avg_mfe": float(np.mean([t.get("mfe", 0.0) for t in trades])),
+                "avg_mae": float(np.mean([t.get("mae", 0.0) for t in trades])),
+                "avg_holding_bars": float(np.mean([t.get("holding_bars", 0) for t in trades])),
+            }
+
+        long_side = side_stats(long_trades)
+        short_side = side_stats(short_trades)
 
         mfe_avg = float(np.mean([t.get("mfe", 0.0) for t in self.closed_trades])) if self.closed_trades else 0.0
         mae_avg = float(np.mean([t.get("mae", 0.0) for t in self.closed_trades])) if self.closed_trades else 0.0
 
+        total_net_closed = float(np.sum([t.get("realized_net", 0.0) for t in self.closed_trades])) if self.closed_trades else 0.0
+        gross_closed = float(np.sum([t.get("realized_gross", 0.0) for t in self.closed_trades])) if self.closed_trades else 0.0
+        fees_per_trade = float(self.portfolio.state.fee_paid) / max(1, len(self.closed_trades))
+
+        # 最差20%交易分析
+        worst = []
+        worst_summary = {}
+        if self.closed_trades:
+            sorted_tr = sorted(self.closed_trades, key=lambda x: x.get("realized_net", 0.0))
+            n = max(1, int(len(sorted_tr) * 0.2))
+            worst = sorted_tr[:n]
+            worst_summary = {
+                "count": n,
+                "avg_net": float(np.mean([t.get("realized_net", 0.0) for t in worst])),
+                "avg_holding_bars": float(np.mean([t.get("holding_bars", 0) for t in worst])),
+                "avg_entry_adx": float(np.mean([t.get("entry_adx_4h", np.nan) for t in worst])),
+                "avg_entry_pullback_depth": float(np.mean([t.get("entry_pullback_depth", np.nan) for t in worst])),
+                "low_mfe_ratio": float(np.mean([(1 if t.get("mfe", 0.0) < abs(t.get("mae", 0.0)) else 0) for t in worst])),
+            }
+
+        reject_reason_count = {}
+        for x in self.rejected_entries:
+            for r in x.get("reasons", []):
+                reject_reason_count[r] = reject_reason_count.get(r, 0) + 1
+
         out.attrs["stats"] = {
             "trade_count": int(self.trade_count),
+            "closed_trade_count": len(self.closed_trades),
             "total_fees": float(self.portfolio.state.fee_paid),
             "funding_total": float(self.portfolio.state.funding_total),
             "reversal_count": int(self.reversal_count),
@@ -484,9 +571,19 @@ class Backtester:
             "profit_factor": float(profit_factor) if pd.notna(profit_factor) else np.nan,
             "avg_holding_bars": avg_holding_bars,
             "time_in_market": time_in_market,
-            "long_short_split": long_short_split,
+            "long_short_split": {"long_count": len(long_trades), "short_count": len(short_trades)},
+            "long_side": long_side,
+            "short_side": short_side,
             "mfe_avg": mfe_avg,
             "mae_avg": mae_avg,
+            "gross_closed_pnl": gross_closed,
+            "net_closed_pnl": total_net_closed,
+            "fees_per_trade": fees_per_trade,
+            "rejected_entries_count": len(self.rejected_entries),
+            "rejected_reason_count": reject_reason_count,
+            "worst_trades_summary": worst_summary,
         }
+        out.attrs["rejected_entries"] = self.rejected_entries
+        out.attrs["closed_trades"] = self.closed_trades
 
         return out

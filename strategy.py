@@ -190,9 +190,7 @@ class BTCPerpTrendStrategy1H:
 
 class BTCPerpPullbackStrategy1H:
     """
-    改进版：4h 趋势过滤 + 突破确认 + 回踩再进 + 可重复进场
-    - state_signal: 趋势方向（1/-1/0）
-    - entry_setup: 当前是否满足新一轮入场条件（1/-1/0）
+    改进版：4h 趋势过滤 + 突破质量 + 首次回踩 + rejection 确认
     """
 
     def __init__(
@@ -200,14 +198,17 @@ class BTCPerpPullbackStrategy1H:
         fast_4h=5,
         slow_4h=15,
         adx_period_4h=14,
-        adx_threshold_4h=28,
+        adx_threshold_4h=30,
         trend_strength_threshold_4h=0.006,
         breakout_window=24 * 7,
-        breakout_confirm_atr=0.15,
+        breakout_confirm_atr=0.2,
+        breakout_body_atr=0.35,
         pullback_bars=3,
+        pullback_max_depth_atr=0.45,
+        first_pullback_only=True,
         atr_period=14,
         atr_pct_low=0.0035,
-        atr_pct_high=0.015,
+        atr_pct_high=0.013,
         ema_entry=20,
     ):
         self.fast_4h = fast_4h
@@ -217,7 +218,10 @@ class BTCPerpPullbackStrategy1H:
         self.trend_strength_threshold_4h = trend_strength_threshold_4h
         self.breakout_window = breakout_window
         self.breakout_confirm_atr = breakout_confirm_atr
+        self.breakout_body_atr = breakout_body_atr
         self.pullback_bars = pullback_bars
+        self.pullback_max_depth_atr = pullback_max_depth_atr
+        self.first_pullback_only = first_pullback_only
         self.atr_period = atr_period
         self.atr_pct_low = atr_pct_low
         self.atr_pct_high = atr_pct_high
@@ -227,27 +231,17 @@ class BTCPerpPullbackStrategy1H:
     def _atr(df, period=14):
         high, low, close = df["high"], df["low"], df["close"]
         prev_close = close.shift(1)
-        tr = pd.concat([
-            high - low,
-            (high - prev_close).abs(),
-            (low - prev_close).abs(),
-        ], axis=1).max(axis=1)
+        tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
         return tr.ewm(alpha=1 / period, adjust=False).mean()
 
     @staticmethod
     def _adx(df, period=14):
         high, low, close = df["high"], df["low"], df["close"]
-        up_move = high.diff()
-        down_move = -low.diff()
+        up_move = high.diff(); down_move = -low.diff()
         plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
         minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
-
         prev_close = close.shift(1)
-        tr = pd.concat([
-            high - low,
-            (high - prev_close).abs(),
-            (low - prev_close).abs(),
-        ], axis=1).max(axis=1)
+        tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
         atr = tr.ewm(alpha=1 / period, adjust=False).mean()
         plus_di = 100 * pd.Series(plus_dm, index=df.index).ewm(alpha=1 / period, adjust=False).mean() / atr
         minus_di = 100 * pd.Series(minus_dm, index=df.index).ewm(alpha=1 / period, adjust=False).mean() / atr
@@ -261,7 +255,6 @@ class BTCPerpPullbackStrategy1H:
         out["volatility"] = out["atr_pct"]
         out["ema_entry"] = out["close"].ewm(span=self.ema_entry, adjust=False).mean()
 
-        # 4h 趋势/regime
         out_4h = out[["open", "high", "low", "close", "volume"]].resample("4h").agg({
             "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
         }).dropna()
@@ -275,7 +268,7 @@ class BTCPerpPullbackStrategy1H:
         out["adx_4h"] = out_4h["adx_4h"].reindex(out.index, method="ffill")
         out["trend_strength_4h"] = out_4h["trend_strength_4h"].reindex(out.index, method="ffill")
 
-        regime_ok = (
+        out["regime_ok"] = (
             (out["adx_4h"] >= self.adx_threshold_4h) &
             (out["trend_strength_4h"] >= self.trend_strength_threshold_4h) &
             (out["atr_pct"] >= self.atr_pct_low) &
@@ -283,33 +276,78 @@ class BTCPerpPullbackStrategy1H:
         )
 
         out["state_signal"] = 0
-        out.loc[(out["ma_fast_4h"] > out["ma_slow_4h"]) & regime_ok, "state_signal"] = 1
-        out.loc[(out["ma_fast_4h"] < out["ma_slow_4h"]) & regime_ok, "state_signal"] = -1
+        out.loc[(out["ma_fast_4h"] > out["ma_slow_4h"]) & out["regime_ok"], "state_signal"] = 1
+        out.loc[(out["ma_fast_4h"] < out["ma_slow_4h"]) & out["regime_ok"], "state_signal"] = -1
 
-        # 支撑/阻力与突破
         out["resistance_7d"] = out["high"].rolling(self.breakout_window, min_periods=self.breakout_window).quantile(0.975)
         out["support_7d"] = out["low"].rolling(self.breakout_window, min_periods=self.breakout_window).quantile(0.025)
 
+        body = (out["close"] - out["open"]).abs()
         long_break = out["close"] > (out["resistance_7d"] + self.breakout_confirm_atr * out["atr"])
         short_break = out["close"] < (out["support_7d"] - self.breakout_confirm_atr * out["atr"])
+        out["breakout_quality_long"] = long_break & (body >= self.breakout_body_atr * out["atr"]) & (out["close"] > out["open"])
+        out["breakout_quality_short"] = short_break & (body >= self.breakout_body_atr * out["atr"]) & (out["close"] < out["open"])
 
-        # 回踩 + rejection（近 pullback_bars 内）
-        near_ema = (out["low"] <= out["ema_entry"]) & (out["close"] >= out["ema_entry"])
-        near_brk_long = out["low"] <= out["resistance_7d"]
-        reject_long = (out["close"] > out["open"]) & ((out["close"] - out["low"]) > (out["high"] - out["close"]))
+        # 标记最近一次 breakout 价位
+        long_level = out["resistance_7d"].where(out["breakout_quality_long"])
+        short_level = out["support_7d"].where(out["breakout_quality_short"])
+        out["last_long_break_level"] = long_level.ffill()
+        out["last_short_break_level"] = short_level.ffill()
+        out["bars_since_long_break"] = out["breakout_quality_long"][::-1].cumsum()[::-1]  # proxy
+        out["bars_since_short_break"] = out["breakout_quality_short"][::-1].cumsum()[::-1]
 
+        # 回踩深度（越小越好）
+        out["pullback_depth_long"] = ((out["last_long_break_level"] - out["low"]) / out["atr"]).clip(lower=0)
+        out["pullback_depth_short"] = ((out["high"] - out["last_short_break_level"]) / out["atr"]).clip(lower=0)
+        out["pullback_depth_ok_long"] = out["pullback_depth_long"] <= self.pullback_max_depth_atr
+        out["pullback_depth_ok_short"] = out["pullback_depth_short"] <= self.pullback_max_depth_atr
+
+        near_ema_long = (out["low"] <= out["ema_entry"]) & (out["close"] >= out["ema_entry"])
+        near_brk_long = (out["low"] <= out["last_long_break_level"]) & (out["low"] >= out["last_long_break_level"] - self.pullback_max_depth_atr * out["atr"])
         near_ema_short = (out["high"] >= out["ema_entry"]) & (out["close"] <= out["ema_entry"])
-        near_brk_short = out["high"] >= out["support_7d"]
-        reject_short = (out["close"] < out["open"]) & ((out["high"] - out["close"]) > (out["close"] - out["low"]))
+        near_brk_short = (out["high"] >= out["last_short_break_level"]) & (out["high"] <= out["last_short_break_level"] + self.pullback_max_depth_atr * out["atr"])
 
-        long_pullback_ok = (near_ema | near_brk_long).rolling(self.pullback_bars).max().fillna(0).astype(bool) & reject_long
-        short_pullback_ok = (near_ema_short | near_brk_short).rolling(self.pullback_bars).max().fillna(0).astype(bool) & reject_short
+        # 更严格 rejection
+        lower_wick = (out["open"].where(out["open"] < out["close"], out["close"]) - out["low"]).clip(lower=0)
+        upper_wick = (out["high"] - out["open"].where(out["open"] > out["close"], out["close"])).clip(lower=0)
+        out["reject_long"] = (out["close"] > out["open"]) & (lower_wick >= body * 0.8)
+        out["reject_short"] = (out["close"] < out["open"]) & (upper_wick >= body * 0.8)
+
+        pullback_touch_long = (near_ema_long | near_brk_long)
+        pullback_touch_short = (near_ema_short | near_brk_short)
+        out["pullback_touch_long"] = pullback_touch_long
+        out["pullback_touch_short"] = pullback_touch_short
+
+        # 首次回踩（突破后首次触发）
+        touch_count_long = pullback_touch_long.astype(int).groupby((out["breakout_quality_long"]).cumsum()).cumsum()
+        touch_count_short = pullback_touch_short.astype(int).groupby((out["breakout_quality_short"]).cumsum()).cumsum()
+        out["first_pullback_ok_long"] = (touch_count_long == 1) | (not self.first_pullback_only)
+        out["first_pullback_ok_short"] = (touch_count_short == 1) | (not self.first_pullback_only)
+
+        long_pullback_ok = pullback_touch_long.rolling(self.pullback_bars).max().fillna(0).astype(bool)
+        short_pullback_ok = pullback_touch_short.rolling(self.pullback_bars).max().fillna(0).astype(bool)
 
         out["entry_setup"] = 0
-        out.loc[(out["state_signal"] == 1) & long_break & long_pullback_ok, "entry_setup"] = 1
-        out.loc[(out["state_signal"] == -1) & short_break & short_pullback_ok, "entry_setup"] = -1
+        long_setup = (
+            (out["state_signal"] == 1) &
+            out["breakout_quality_long"] &
+            long_pullback_ok &
+            out["reject_long"] &
+            out["pullback_depth_ok_long"] &
+            out["first_pullback_ok_long"]
+        )
+        short_setup = (
+            (out["state_signal"] == -1) &
+            out["breakout_quality_short"] &
+            short_pullback_ok &
+            out["reject_short"] &
+            out["pullback_depth_ok_short"] &
+            out["first_pullback_ok_short"]
+        )
 
-        # 兼容旧框架字段
+        out.loc[long_setup, "entry_setup"] = 1
+        out.loc[short_setup, "entry_setup"] = -1
+
         out["signal"] = out["state_signal"]
         out["trade_signal"] = out["entry_setup"]
 

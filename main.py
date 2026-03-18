@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import pandas as pd
+import numpy as np
 
 from config import *
 from data import CCXTDataSource
@@ -145,6 +146,23 @@ def run_case(
     print("time_in_market:", f"{stats.get('time_in_market', 0.0):.2%}")
     print("long_short_split:", stats.get("long_short_split", {}))
     print("mfe_avg:", f"{stats.get('mfe_avg', 0.0):.2f}", "mae_avg:", f"{stats.get('mae_avg', 0.0):.2f}")
+    print("fees_per_trade:", f"{stats.get('fees_per_trade', 0.0):.4f}")
+    print("gross_closed_pnl:", f"{stats.get('gross_closed_pnl', 0.0):.2f}", "net_closed_pnl:", f"{stats.get('net_closed_pnl', 0.0):.2f}")
+    print("long_side:", stats.get("long_side", {}))
+    print("short_side:", stats.get("short_side", {}))
+    print("worst_trades_summary:", stats.get("worst_trades_summary", {}))
+    print("rejected_reason_count:", stats.get("rejected_reason_count", {}))
+
+    return {
+        "case": name,
+        "final_equity": float(result['equity'].iloc[-1]),
+        "return": float(result['equity'].iloc[-1] / INITIAL_CASH - 1),
+        "max_drawdown": float(max_dd),
+        "fees": float(stats.get('total_fees', 0.0)),
+        "win_rate": float(stats.get('win_rate', 0.0)),
+        "pnl_ratio": float(stats.get('pnl_ratio', float('nan'))) if pd.notna(stats.get('pnl_ratio', float('nan'))) else np.nan,
+        "profit_factor": float(stats.get('profit_factor', float('nan'))) if pd.notna(stats.get('profit_factor', float('nan'))) else np.nan,
+    }
 
 
 def main():
@@ -153,21 +171,56 @@ def main():
 
     overlay = load_research_overlay("event_signals.json")
 
-    # 升级版：突破确认 + 回踩再进 + 风险仓位 sizing + 二次入场
-    strat = BTCPerpPullbackStrategy1H(
+    reports = []
+
+    # 改造前（宽松版）
+    strat_v2 = BTCPerpPullbackStrategy1H(
         adx_threshold_4h=30,
         trend_strength_threshold_4h=0.006,
         breakout_confirm_atr=0.15,
+        breakout_body_atr=0.25,
         pullback_bars=3,
+        pullback_max_depth_atr=0.60,
+        first_pullback_only=False,
         atr_pct_low=0.0035,
         atr_pct_high=0.015,
     )
-    df_sig = strat.generate_signals(df)
+    df_sig_v2 = strat_v2.generate_signals(df)
+    reports.append(run_case(
+        "LIVE_LIKE_PULLBACK_RISK_V2_BASELINE",
+        df_sig_v2,
+        strat_v2,
+        entry_is_maker=False,
+        funding_rate_per_8h=FUNDING_RATE_PER_8H,
+        leverage=2.0,
+        max_pos=0.8,
+        cooldown_bars=3,
+        stop_atr=1.4,
+        take_R=2.6,
+        trail_start_R=1.0,
+        trail_atr=2.2,
+        show_result_tail=False,
+        debug_breakpoint=False,
+        research_overlay=overlay,
+    ))
 
-    run_case(
-        "LIVE_LIKE_PULLBACK_RISK_V2",
-        df_sig,
-        strat,
+    # 改造后（严格过滤版）
+    strat_v3 = BTCPerpPullbackStrategy1H(
+        adx_threshold_4h=32,
+        trend_strength_threshold_4h=0.0065,
+        breakout_confirm_atr=0.20,
+        breakout_body_atr=0.35,
+        pullback_bars=3,
+        pullback_max_depth_atr=0.45,
+        first_pullback_only=True,
+        atr_pct_low=0.0035,
+        atr_pct_high=0.013,
+    )
+    df_sig_v3 = strat_v3.generate_signals(df)
+    reports.append(run_case(
+        "LIVE_LIKE_PULLBACK_RISK_V3_FILTERED",
+        df_sig_v3,
+        strat_v3,
         entry_is_maker=False,
         funding_rate_per_8h=FUNDING_RATE_PER_8H,
         leverage=2.0,
@@ -180,7 +233,19 @@ def main():
         show_result_tail=True,
         debug_breakpoint=False,
         research_overlay=overlay,
-    )
+    ))
+
+    print("\n==== BEFORE vs AFTER SUMMARY ====")
+    rep = pd.DataFrame(reports)
+    print(rep.to_string(index=False, formatters={
+        "return": lambda x: f"{x:.2%}",
+        "max_drawdown": lambda x: f"{x:.2%}",
+        "fees": lambda x: f"{x:.2f}",
+        "win_rate": lambda x: f"{x:.2%}",
+        "pnl_ratio": lambda x: f"{x:.2f}" if pd.notna(x) else "N/A",
+        "profit_factor": lambda x: f"{x:.2f}" if pd.notna(x) else "N/A",
+        "final_equity": lambda x: f"{x:.2f}",
+    }))
 
 
 if __name__ == "__main__":
