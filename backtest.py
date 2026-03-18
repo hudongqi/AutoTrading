@@ -390,6 +390,17 @@ class Backtester:
                             "entry_regime_ok": bool(row.get("regime_ok", True)),
                             "entry_pullback_depth": float(row.get("pullback_depth_long", np.nan) if side == 1 else row.get("pullback_depth_short", np.nan)),
                             "entry_breakout_quality": bool(row.get("breakout_quality_long", False) if side == 1 else row.get("breakout_quality_short", False)),
+                            "breakout_bar_time": row.get("breakout_bar_time_long", None) if side == 1 else row.get("breakout_bar_time_short", None),
+                            "breakout_level": float(row.get("breakout_level_long", np.nan) if side == 1 else row.get("breakout_level_short", np.nan)),
+                            "breakout_age_at_entry": float(row.get("bars_since_breakout_long", np.nan) if side == 1 else row.get("bars_since_breakout_short", np.nan)),
+                            "rejection_type": row.get("rejection_type_long", "none") if side == 1 else row.get("rejection_type_short", "none"),
+                            "first_pullback_flag": bool(row.get("first_pullback_ok_long", False) if side == 1 else row.get("first_pullback_ok_short", False)),
+                            "entry_reason": "breakout->pullback->rejection",
+                            "entry_regime_snapshot": {
+                                "regime_ok": bool(row.get("regime_ok", True)),
+                                "adx_4h": float(row.get("adx_4h", np.nan)),
+                                "trend_strength_4h": float(row.get("trend_strength_4h", np.nan)),
+                            },
                         }
             elif current_pos == 0 and (not in_cooldown) and signal != 0 and entry_trigger == 0:
                 reject_reason = []
@@ -420,6 +431,10 @@ class Backtester:
                     "reasons": reject_reason,
                     "pullback_depth_long": float(row.get("pullback_depth_long", np.nan)),
                     "pullback_depth_short": float(row.get("pullback_depth_short", np.nan)),
+                    "breakout_age_long": float(row.get("bars_since_breakout_long", np.nan)),
+                    "breakout_age_short": float(row.get("bars_since_breakout_short", np.nan)),
+                    "breakout_level_long": float(row.get("breakout_level_long", np.nan)),
+                    "breakout_level_short": float(row.get("breakout_level_short", np.nan)),
                 })
 
             # ========== B2) Funding 成本/收益模拟 ==========

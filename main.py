@@ -182,6 +182,7 @@ def main():
         pullback_bars=3,
         pullback_max_depth_atr=0.60,
         first_pullback_only=False,
+        allow_same_bar_entry=True,
         atr_pct_low=0.0035,
         atr_pct_high=0.015,
     )
@@ -206,15 +207,17 @@ def main():
 
     # 改造后（严格过滤版）
     strat_v3 = BTCPerpPullbackStrategy1H(
-        adx_threshold_4h=32,
-        trend_strength_threshold_4h=0.0065,
-        breakout_confirm_atr=0.20,
-        breakout_body_atr=0.35,
+        adx_threshold_4h=30,
+        trend_strength_threshold_4h=0.006,
+        breakout_confirm_atr=0.15,
+        breakout_body_atr=0.25,
         pullback_bars=3,
-        pullback_max_depth_atr=0.45,
+        pullback_max_depth_atr=0.60,
         first_pullback_only=True,
+        allow_same_bar_entry=False,
+        breakout_valid_bars=10,
         atr_pct_low=0.0035,
-        atr_pct_high=0.013,
+        atr_pct_high=0.015,
     )
     df_sig_v3 = strat_v3.generate_signals(df)
     reports.append(run_case(
