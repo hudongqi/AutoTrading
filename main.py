@@ -143,37 +143,26 @@ def main():
 
     overlay = load_research_overlay("event_signals.json")
 
-    strat_base = BTCPerpTrendStrategy1H(fast=5, slow=15)
-    df_sig_base = strat_base.generate_signals(df)
-    run_case("BASELINE_REAL_FEE_V1", df_sig_base, strat_base, entry_is_maker=False, funding_rate_per_8h=0.0, research_overlay=overlay)
+    # 仅保留一版：最接近线上真实执行环境
+    # - 开平仓统一按 taker 成本
+    # - 启用 funding 成本模拟
+    # - 启用研究层风险覆盖（block/reduce_risk）
+    strat = BTCPerpTrendStrategy1H(fast=5, slow=15)
+    df_sig = strat.generate_signals(df)
 
-    run_case("MAKER_ENTRY_TEST_V1", df_sig_base, strat_base, entry_is_maker=True, funding_rate_per_8h=0.0, research_overlay=overlay)
-
-    run_case("BASELINE_REAL_FEE_V1_WITH_FUNDING", df_sig_base, strat_base, entry_is_maker=False, funding_rate_per_8h=FUNDING_RATE_PER_8H, research_overlay=overlay)
-
-    strat_aggr = BTCPerpTrendStrategy1H(
-        fast=5,
-        slow=15,
-        atr_pct_threshold=0.0038,
-        use_regime_filter=True,
-        adx_threshold_4h=32,
-        trend_strength_threshold_4h=0.006,
-        slow_slope_lookback_4h=3,
-    )
-    df_sig_aggr = strat_aggr.generate_signals(df)
     run_case(
-        "AGGRESSIVE_GROWTH_V1",
-        df_sig_aggr,
-        strat_aggr,
-        entry_is_maker=True,
-        funding_rate_per_8h=0.0,
-        leverage=3.6,
+        "LIVE_LIKE_V1",
+        df_sig,
+        strat,
+        entry_is_maker=False,
+        funding_rate_per_8h=FUNDING_RATE_PER_8H,
+        leverage=2.0,
         max_pos=0.8,
         cooldown_bars=3,
-        stop_atr=1.3,
-        take_R=2.7,
-        trail_start_R=0.8,
-        trail_atr=3.0,
+        stop_atr=1.5,
+        take_R=3.5,
+        trail_start_R=1.5,
+        trail_atr=2.0,
         show_result_tail=True,
         debug_breakpoint=False,
         research_overlay=overlay,
