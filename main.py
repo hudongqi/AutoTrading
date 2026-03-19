@@ -9,6 +9,7 @@ from config import *
 from data import CCXTDataSource
 from strategy import BTCPerpPullbackStrategy1H
 from strategy_profiles import get_strategy_profile, list_profiles, BACKTEST_COMMON
+from exit_profiles import get_exit_profile, list_exit_profiles
 from portfolio import PerpPortfolio
 from broker import SimBroker
 from backtest import Backtester
@@ -58,9 +59,9 @@ def load_research_overlay(event_file="event_signals.json"):
     }
 
 
-def run_case(name: str, df_sig, strat, research_overlay=None, show_result_tail=True, debug_breakpoint=False, **params):
+def run_case(name: str, df_sig, strat, research_overlay=None, show_result_tail=True, debug_breakpoint=False, exit_profile="exit_baseline", **params):
     research_overlay = research_overlay or load_research_overlay()
-    cfg = {**BACKTEST_COMMON, **params}
+    cfg = {**BACKTEST_COMMON, **get_exit_profile(exit_profile), **params}
 
     leverage = max(1.0, cfg["leverage"] * research_overlay["leverage_mult"])
     max_pos = max(0.0, cfg["max_pos"] * research_overlay["max_pos_mult"])
@@ -95,6 +96,8 @@ def run_case(name: str, df_sig, strat, research_overlay=None, show_result_tail=T
         allow_reentry=cfg["allow_reentry"],
         partial_take_R=cfg["partial_take_R"],
         partial_take_frac=cfg["partial_take_frac"],
+        break_even_after_partial=cfg["break_even_after_partial"],
+        break_even_R=cfg["break_even_R"],
     )
 
     result = bt.run(df_sig)
@@ -126,6 +129,14 @@ def run_case(name: str, df_sig, strat, research_overlay=None, show_result_tail=T
     print("mfe_avg:", f"{stats.get('mfe_avg', 0.0):.2f}", "mae_avg:", f"{stats.get('mae_avg', 0.0):.2f}")
     print("fees_per_trade:", f"{stats.get('fees_per_trade', 0.0):.4f}")
     print("gross_closed_pnl:", f"{stats.get('gross_closed_pnl', 0.0):.2f}", "net_closed_pnl:", f"{stats.get('net_closed_pnl', 0.0):.2f}")
+    mc = stats.get('mfe_capture_ratio', float('nan'))
+    gb = stats.get('give_back_ratio', float('nan'))
+    ar = stats.get('avg_R_realized', float('nan'))
+    print("mfe_capture_ratio:", f"{mc:.2f}" if pd.notna(mc) else "N/A")
+    print("give_back_ratio:", f"{gb:.2f}" if pd.notna(gb) else "N/A")
+    print("avg_R_realized:", f"{ar:.2f}" if pd.notna(ar) else "N/A")
+    print("exit_reason_split:", stats.get('exit_reason_split', {}))
+    print("partial_take_effectiveness:", stats.get('partial_take_effectiveness', float('nan')))
 
     return {
         "profile": name,
@@ -141,6 +152,10 @@ def run_case(name: str, df_sig, strat, research_overlay=None, show_result_tail=T
         "gross_closed_pnl": float(stats.get('gross_closed_pnl', 0.0)),
         "net_closed_pnl": float(stats.get('net_closed_pnl', 0.0)),
         "fees_per_trade": float(stats.get('fees_per_trade', 0.0)),
+        "mfe_capture_ratio": float(stats.get('mfe_capture_ratio', float('nan'))) if pd.notna(stats.get('mfe_capture_ratio', float('nan'))) else np.nan,
+        "give_back_ratio": float(stats.get('give_back_ratio', float('nan'))) if pd.notna(stats.get('give_back_ratio', float('nan'))) else np.nan,
+        "avg_R_realized": float(stats.get('avg_R_realized', float('nan'))) if pd.notna(stats.get('avg_R_realized', float('nan'))) else np.nan,
+        "exit_reason_split": stats.get('exit_reason_split', {}),
     }
 
 
@@ -151,6 +166,7 @@ def build_strategy(profile_name: str):
 def main():
     parser = argparse.ArgumentParser(description="Run main backtest for a strategy profile")
     parser.add_argument("--profile", default="v6_1_default", choices=list_profiles())
+    parser.add_argument("--exit-profile", default="exit_baseline", choices=list_exit_profiles())
     args = parser.parse_args()
 
     ds = CCXTDataSource()
@@ -159,7 +175,7 @@ def main():
 
     strat = build_strategy(args.profile)
     df_sig = strat.generate_signals(df)
-    run_case(f"LIVE_LIKE_{args.profile}", df_sig, strat, show_result_tail=True, research_overlay=overlay)
+    run_case(f"LIVE_LIKE_{args.profile}_{args.exit_profile}", df_sig, strat, show_result_tail=True, research_overlay=overlay, exit_profile=args.exit_profile)
 
 
 if __name__ == "__main__":

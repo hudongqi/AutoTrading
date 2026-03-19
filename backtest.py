@@ -30,6 +30,8 @@ class Backtester:
         allow_reentry: bool = True,
         partial_take_R: float = 0.0,
         partial_take_frac: float = 0.0,
+        break_even_after_partial: bool = False,
+        break_even_R: float = 0.0,
     ):
         self.broker = broker
         self.portfolio = portfolio
@@ -49,6 +51,8 @@ class Backtester:
         self.allow_reentry = bool(allow_reentry)
         self.partial_take_R = float(partial_take_R)
         self.partial_take_frac = float(partial_take_frac)
+        self.break_even_after_partial = bool(break_even_after_partial)
+        self.break_even_R = float(break_even_R)
 
         self.cur_stop = None
         self.cur_take = None
@@ -309,7 +313,8 @@ class Backtester:
                     elif hit_partial and self.partial_take_frac > 0:
                         evt = self._partial_take(exit_mid_price=partial_take_price, frac=self.partial_take_frac, reason="PARTIAL_TAKE")
                         self.partial_taken = True
-                        self.cur_stop = max(self.cur_stop, self.entry_price)
+                        if self.break_even_after_partial:
+                            self.cur_stop = max(self.cur_stop, self.entry_price)
                     elif hit_take:
                         evt = self._close_position(exit_mid_price=self.cur_take, reason="TAKE")
                         exit_reason, exit_price = evt["exit_reason"], evt["exit_price"]
@@ -330,7 +335,8 @@ class Backtester:
                     elif hit_partial and self.partial_take_frac > 0:
                         evt = self._partial_take(exit_mid_price=partial_take_price, frac=self.partial_take_frac, reason="PARTIAL_TAKE")
                         self.partial_taken = True
-                        self.cur_stop = min(self.cur_stop, self.entry_price)
+                        if self.break_even_after_partial:
+                            self.cur_stop = min(self.cur_stop, self.entry_price)
                     elif hit_take:
                         evt = self._close_position(exit_mid_price=self.cur_take, reason="TAKE")
                         exit_reason, exit_price = evt["exit_reason"], evt["exit_price"]
@@ -441,6 +447,8 @@ class Backtester:
                                 "adx_4h": float(row.get("adx_4h", np.nan)),
                                 "trend_strength_4h": float(row.get("trend_strength_4h", np.nan)),
                             },
+                            "entry_risk_per_unit": float(self.entry_risk) if self.entry_risk is not None else np.nan,
+                            "initial_risk_cash": abs(float(order_qty)) * float(self.entry_risk) if (self.entry_risk is not None and order_qty is not None) else np.nan,
                         }
             elif current_pos == 0 and (not in_cooldown) and signal != 0 and entry_trigger == 0:
                 reject_reason = []
@@ -491,6 +499,17 @@ class Backtester:
             if st.position != 0 and self.entry_price is not None and pd.notna(atr) and atr > 0:
                 side = 1 if st.position > 0 else -1
                 profit = (close - self.entry_price) if side == 1 else (self.entry_price - close)
+
+                # break-even 保护
+                if self.entry_risk is not None and self.entry_risk > 0 and self.break_even_R > 0:
+                    if profit >= self.break_even_R * self.entry_risk:
+                        if side == 1:
+                            self.cur_stop = max(self.cur_stop, self.entry_price)
+                        else:
+                            self.cur_stop = min(self.cur_stop, self.entry_price)
+                        if self.current_trade is not None:
+                            self.current_trade["break_even_armed"] = True
+
                 trailing_active = (
                     self.entry_risk is not None and self.entry_risk > 0 and
                     profit >= self.trail_start_R * self.entry_risk
@@ -593,6 +612,26 @@ class Backtester:
         gross_closed = float(np.sum([t.get("realized_gross", 0.0) for t in self.closed_trades])) if self.closed_trades else 0.0
         fees_per_trade = float(self.portfolio.state.fee_paid) / max(1, len(self.closed_trades))
 
+        # 新指标：MFE capture / give-back / avg R realized / exit reason split
+        mfe_capture_vals, giveback_vals, r_realized_vals = [], [], []
+        exit_reason_split = {}
+        partial_remainder_vals = []
+        for t in self.closed_trades:
+            mfe = float(t.get("mfe", 0.0))
+            net = float(t.get("realized_net", 0.0))
+            if mfe > 0:
+                mfe_capture_vals.append(net / mfe)
+                giveback_vals.append((mfe - net) / mfe)
+            init_risk_cash = float(t.get("initial_risk_cash", np.nan))
+            if np.isfinite(init_risk_cash) and init_risk_cash > 0:
+                r_realized_vals.append(net / init_risk_cash)
+            reason = str(t.get("exit_reason", "UNKNOWN"))
+            exit_reason_split[reason] = exit_reason_split.get(reason, 0) + 1
+            px = t.get("partial_exits", []) or []
+            if px:
+                rem = net - sum(float(x.get("realized_gross", 0.0)) for x in px)
+                partial_remainder_vals.append(rem)
+
         # 最差20%交易分析
         worst = []
         worst_summary = {}
@@ -634,6 +673,11 @@ class Backtester:
             "gross_closed_pnl": gross_closed,
             "net_closed_pnl": total_net_closed,
             "fees_per_trade": fees_per_trade,
+            "mfe_capture_ratio": float(np.mean(mfe_capture_vals)) if mfe_capture_vals else np.nan,
+            "give_back_ratio": float(np.mean(giveback_vals)) if giveback_vals else np.nan,
+            "avg_R_realized": float(np.mean(r_realized_vals)) if r_realized_vals else np.nan,
+            "exit_reason_split": exit_reason_split,
+            "partial_take_effectiveness": float(np.mean(partial_remainder_vals)) if partial_remainder_vals else np.nan,
             "rejected_entries_count": len(self.rejected_entries),
             "rejected_reason_count": reject_reason_count,
             "worst_trades_summary": worst_summary,
