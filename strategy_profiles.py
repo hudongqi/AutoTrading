@@ -15,6 +15,7 @@ COMMON_V6 = {
     "breakout_valid_bars": 12,
     "atr_pct_low": 0.0030,
     "atr_pct_high": 0.016,
+    "enable_continuation_long": False,
 }
 
 STRATEGY_PROFILES = {
@@ -41,6 +42,17 @@ STRATEGY_PROFILES = {
         "pullback_max_depth_atr": 0.40,
         "min_breakout_age_long": 1,
         "rejection_wick_ratio_long": 0.65,
+    },
+    "v7_dual_long": {
+        **COMMON_V6,
+        "pullback_max_depth_atr": 0.40,
+        "min_breakout_age_long": 1,
+        "rejection_wick_ratio_long": 0.65,
+        "enable_continuation_long": True,
+        "continuation_window": 6,
+        "continuation_ema_buffer_atr": 0.35,
+        "continuation_body_atr": 0.22,
+        "continuation_cooldown_bars": 3,
     },
 }
 

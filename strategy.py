@@ -3,7 +3,6 @@ import numpy as np
 
 
 class BTCPerpTrendStrategy1H:
-
     def __init__(
         self,
         fast=5,
@@ -29,7 +28,6 @@ class BTCPerpTrendStrategy1H:
         self.adx_threshold_4h = adx_threshold_4h
         self.trend_strength_threshold_4h = trend_strength_threshold_4h
         self.slow_slope_lookback_4h = slow_slope_lookback_4h
-        self.trail_start_atr = 1.5
 
     @staticmethod
     def _atr(df, period):
@@ -37,11 +35,7 @@ class BTCPerpTrendStrategy1H:
         low = df["low"]
         close = df["close"]
         prev_close = close.shift(1)
-        tr = pd.concat([
-            high - low,
-            (high - prev_close).abs(),
-            (low - prev_close).abs()
-        ], axis=1).max(axis=1)
+        tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
         return tr.ewm(alpha=1 / period, adjust=False).mean()
 
     @staticmethod
@@ -49,27 +43,17 @@ class BTCPerpTrendStrategy1H:
         high = df["high"]
         low = df["low"]
         close = df["close"]
-
         up_move = high.diff()
         down_move = -low.diff()
-
         plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
         minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
-
         prev_close = close.shift(1)
-        tr = pd.concat([
-            high - low,
-            (high - prev_close).abs(),
-            (low - prev_close).abs()
-        ], axis=1).max(axis=1)
-
+        tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
         atr = tr.ewm(alpha=1 / period, adjust=False).mean()
         plus_di = 100 * pd.Series(plus_dm, index=df.index).ewm(alpha=1 / period, adjust=False).mean() / atr
         minus_di = 100 * pd.Series(minus_dm, index=df.index).ewm(alpha=1 / period, adjust=False).mean() / atr
-
         dx = ((plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)) * 100
-        adx = dx.ewm(alpha=1 / period, adjust=False).mean()
-        return adx
+        return dx.ewm(alpha=1 / period, adjust=False).mean()
 
     def generate_signals(self, df):
         out = df.copy()
@@ -78,59 +62,31 @@ class BTCPerpTrendStrategy1H:
         out["atr"] = self._atr(out, self.atr_period)
         out["atr_pct"] = out["atr"] / out["close"]
         out["volatility"] = out["atr_pct"]
-
         window = 7 * 24
         q = 0.975
         out["resistance_7d"] = out["high"].rolling(window, min_periods=window).quantile(q)
         out["support_7d"] = out["low"].rolling(window, min_periods=window).quantile(1 - q)
-
-        out_4h = out[["open", "high", "low", "close", "volume"]].resample("4h").agg({
-            "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
-        }).dropna()
+        out_4h = out[["open", "high", "low", "close", "volume"]].resample("4h").agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}).dropna()
         out_4h["ma_fast_4h"] = out_4h["close"].rolling(self.fast_4h).mean()
         out_4h["ma_slow_4h"] = out_4h["close"].rolling(self.slow_4h).mean()
         out_4h["trend_4h"] = 0
         out_4h.loc[out_4h["ma_fast_4h"] > out_4h["ma_slow_4h"], "trend_4h"] = 1
         out_4h.loc[out_4h["ma_fast_4h"] < out_4h["ma_slow_4h"], "trend_4h"] = -1
-
         out_4h["adx_4h"] = self._adx(out_4h, self.adx_period_4h)
         out_4h["trend_strength_4h"] = (out_4h["ma_fast_4h"] - out_4h["ma_slow_4h"]).abs() / out_4h["close"]
         out_4h["ma_slow_slope_4h"] = out_4h["ma_slow_4h"].pct_change(self.slow_slope_lookback_4h)
-
         out["trend_4h"] = out_4h["trend_4h"].reindex(out.index, method="ffill").fillna(0).astype(int)
         out["adx_4h"] = out_4h["adx_4h"].reindex(out.index, method="ffill")
         out["trend_strength_4h"] = out_4h["trend_strength_4h"].reindex(out.index, method="ffill")
         out["ma_slow_slope_4h"] = out_4h["ma_slow_slope_4h"].reindex(out.index, method="ffill")
-
         out["signal"] = 0
+        regime_long = True
+        regime_short = True
         if self.use_regime_filter:
-            regime_long = (
-                (out["adx_4h"] >= self.adx_threshold_4h) &
-                (out["trend_strength_4h"] >= self.trend_strength_threshold_4h) &
-                (out["ma_slow_slope_4h"] > 0)
-            )
-            regime_short = (
-                (out["adx_4h"] >= self.adx_threshold_4h) &
-                (out["trend_strength_4h"] >= self.trend_strength_threshold_4h) &
-                (out["ma_slow_slope_4h"] < 0)
-            )
-        else:
-            regime_long = True
-            regime_short = True
-
-        long_cond = (
-            (out["ma_fast"] > out["ma_slow"]) &
-            (out["trend_4h"] == 1) &
-            (out["atr_pct"] > self.atr_pct_threshold) &
-            (out["close"] > out["resistance_7d"]) & regime_long
-        )
-        short_cond = (
-            (out["ma_fast"] < out["ma_slow"]) &
-            (out["trend_4h"] == -1) &
-            (out["atr_pct"] > self.atr_pct_threshold) &
-            (out["close"] < out["support_7d"]) & regime_short
-        )
-
+            regime_long = (out["adx_4h"] >= self.adx_threshold_4h) & (out["trend_strength_4h"] >= self.trend_strength_threshold_4h) & (out["ma_slow_slope_4h"] > 0)
+            regime_short = (out["adx_4h"] >= self.adx_threshold_4h) & (out["trend_strength_4h"] >= self.trend_strength_threshold_4h) & (out["ma_slow_slope_4h"] < 0)
+        long_cond = (out["ma_fast"] > out["ma_slow"]) & (out["trend_4h"] == 1) & (out["atr_pct"] > self.atr_pct_threshold) & (out["close"] > out["resistance_7d"]) & regime_long
+        short_cond = (out["ma_fast"] < out["ma_slow"]) & (out["trend_4h"] == -1) & (out["atr_pct"] > self.atr_pct_threshold) & (out["close"] < out["support_7d"]) & regime_short
         out.loc[long_cond, "signal"] = 1
         out.loc[short_cond, "signal"] = -1
         out["trade_signal"] = out["signal"].diff().fillna(0)
@@ -140,8 +96,11 @@ class BTCPerpTrendStrategy1H:
 
 class BTCPerpPullbackStrategy1H:
     """
-    时序化 pullback 入场：
-    breakout -> pullback -> rejection -> entry
+    主链路：breakout -> pullback -> rejection -> entry
+    新增第二套 long-only continuation setup（不恢复 short）：
+    - 趋势已确立
+    - 价格在 EMA20 上方整理后重新发力
+    - 用于补充高质量 continuation 机会
     """
 
     def __init__(
@@ -170,6 +129,12 @@ class BTCPerpPullbackStrategy1H:
         atr_pct_low=0.0035,
         atr_pct_high=0.013,
         ema_entry=20,
+        # 第二套 continuation setup
+        enable_continuation_long=True,
+        continuation_window=6,
+        continuation_ema_buffer_atr=0.35,
+        continuation_body_atr=0.25,
+        continuation_cooldown_bars=3,
     ):
         self.fast_4h = fast_4h
         self.slow_4h = slow_4h
@@ -195,6 +160,11 @@ class BTCPerpPullbackStrategy1H:
         self.atr_pct_low = atr_pct_low
         self.atr_pct_high = atr_pct_high
         self.ema_entry = ema_entry
+        self.enable_continuation_long = enable_continuation_long
+        self.continuation_window = continuation_window
+        self.continuation_ema_buffer_atr = continuation_ema_buffer_atr
+        self.continuation_body_atr = continuation_body_atr
+        self.continuation_cooldown_bars = continuation_cooldown_bars
 
     @staticmethod
     def _atr(df, period=14):
@@ -255,7 +225,6 @@ class BTCPerpPullbackStrategy1H:
         body = (out["close"] - out["open"]).abs()
         long_break_raw = out["close"] > (out["resistance_7d"] + self.breakout_confirm_atr * out["atr"])
         short_break_raw = out["close"] < (out["support_7d"] - self.breakout_confirm_atr * out["atr"])
-
         out["breakout_quality_long"] = long_break_raw & (body >= self.breakout_body_atr * out["atr"]) & (out["close"] > out["open"])
         out["breakout_quality_short"] = short_break_raw & (body >= self.breakout_body_atr * out["atr"]) & (out["close"] < out["open"])
 
@@ -269,6 +238,7 @@ class BTCPerpPullbackStrategy1H:
         idx = list(out.index)
         n = len(out)
         entry_setup = np.zeros(n, dtype=int)
+        entry_reason = np.array(["none"] * n, dtype=object)
 
         b_event_l = np.zeros(n, dtype=bool)
         b_event_s = np.zeros(n, dtype=bool)
@@ -289,11 +259,9 @@ class BTCPerpPullbackStrategy1H:
 
         last_l_idx = None; last_l_lvl = np.nan; l_touch_count = 0
         last_s_idx = None; last_s_lvl = np.nan; s_touch_count = 0
-
         min_age = 0 if self.allow_same_bar_entry else 1
 
         for i in range(n):
-            # 记录 breakout 事件
             if bool(out.iloc[i]["breakout_quality_long"]) and int(out.iloc[i]["state_signal"]) == 1:
                 last_l_idx = i
                 last_l_lvl = float(out.iloc[i]["resistance_7d"])
@@ -306,67 +274,57 @@ class BTCPerpPullbackStrategy1H:
                 s_touch_count = 0
                 b_event_s[i] = True
 
-            # LONG path
             if last_l_idx is not None and np.isfinite(last_l_lvl):
                 age = i - last_l_idx
                 b_age_l[i] = age
                 b_level_l[i] = last_l_lvl
                 b_time_l[i] = str(idx[last_l_idx])
-
                 if age <= self.breakout_valid_bars:
                     atr = float(out.iloc[i]["atr"]) if pd.notna(out.iloc[i]["atr"]) else np.nan
                     low = float(out.iloc[i]["low"])
                     ema = float(out.iloc[i]["ema_entry"])
-
                     touch = (low <= last_l_lvl) or (low <= ema)
                     p_touch_l[i] = touch
                     if np.isfinite(atr) and atr > 0:
                         depth = max(0.0, (last_l_lvl - low) / atr)
                         p_depth_l[i] = depth
                         p_depth_ok_l[i] = depth <= self.pullback_max_depth_atr
-
                     if touch:
                         l_touch_count += 1
                         first_pb_l[i] = (l_touch_count == 1)
-
                     max_pb_long = 1 if self.first_pullback_only else self.max_pullbacks_long
                     first_ok = l_touch_count <= max_pb_long
                     reject_ok = bool(out.iloc[i]["reject_long"])
                     state_ok = int(out.iloc[i]["state_signal"]) == 1
-
                     if (age >= max(min_age, self.min_breakout_age_long)) and touch and p_depth_ok_l[i] and first_ok and reject_ok and state_ok:
                         entry_setup[i] = 1
+                        entry_reason[i] = "breakout_pullback_rejection"
 
-            # SHORT path
             if last_s_idx is not None and np.isfinite(last_s_lvl):
                 age = i - last_s_idx
                 b_age_s[i] = age
                 b_level_s[i] = last_s_lvl
                 b_time_s[i] = str(idx[last_s_idx])
-
                 if age <= self.breakout_valid_bars:
                     atr = float(out.iloc[i]["atr"]) if pd.notna(out.iloc[i]["atr"]) else np.nan
                     high = float(out.iloc[i]["high"])
                     ema = float(out.iloc[i]["ema_entry"])
-
                     touch = (high >= last_s_lvl) or (high >= ema)
                     p_touch_s[i] = touch
                     if np.isfinite(atr) and atr > 0:
                         depth = max(0.0, (high - last_s_lvl) / atr)
                         p_depth_s[i] = depth
                         p_depth_ok_s[i] = depth <= self.pullback_max_depth_atr
-
                     if touch:
                         s_touch_count += 1
                         first_pb_s[i] = (s_touch_count == 1)
-
                     max_pb_short = 1 if self.first_pullback_only else self.max_pullbacks_short
                     first_ok = s_touch_count <= max_pb_short
                     reject_ok = bool(out.iloc[i]["reject_short"])
                     state_ok = int(out.iloc[i]["state_signal"]) == -1
-
                     if (age >= max(min_age, self.min_breakout_age_short)) and touch and p_depth_ok_s[i] and first_ok and reject_ok and state_ok:
                         entry_setup[i] = -1
+                        entry_reason[i] = "breakout_pullback_rejection"
 
         out["breakout_event_long"] = b_event_l
         out["breakout_event_short"] = b_event_s
@@ -376,7 +334,6 @@ class BTCPerpPullbackStrategy1H:
         out["bars_since_breakout_short"] = b_age_s
         out["breakout_bar_time_long"] = b_time_l
         out["breakout_bar_time_short"] = b_time_s
-
         out["pullback_touch_long"] = p_touch_l
         out["pullback_touch_short"] = p_touch_s
         out["pullback_depth_long"] = p_depth_l
@@ -386,7 +343,23 @@ class BTCPerpPullbackStrategy1H:
         out["first_pullback_ok_long"] = first_pb_l
         out["first_pullback_ok_short"] = first_pb_s
 
+        # 第二套 continuation setup：趋势中 EMA20 上方压缩后再发力
+        out["continuation_setup_long"] = False
+        if self.enable_continuation_long:
+            rolling_max_prev = out["high"].rolling(self.continuation_window).max().shift(1)
+            ema_buf = self.continuation_ema_buffer_atr * out["atr"]
+            continuation_touch = (out["low"] >= (out["ema_entry"] - ema_buf)) & (out["low"] <= (out["ema_entry"] + ema_buf))
+            continuation_break = out["close"] > rolling_max_prev
+            continuation_body_ok = body >= self.continuation_body_atr * out["atr"]
+            continuation_state_ok = (out["state_signal"] == 1) & out["regime_ok"]
+            cont_setup = continuation_state_ok & continuation_touch.shift(1).rolling(self.continuation_cooldown_bars).max().fillna(0).astype(bool) & continuation_break & continuation_body_ok & out["reject_long"]
+            out["continuation_setup_long"] = cont_setup
+            fill_mask = (entry_setup == 0) & cont_setup.fillna(False).to_numpy()
+            entry_setup[fill_mask] = 1
+            entry_reason[fill_mask] = "trend_continuation_reclaim"
+
         out["entry_setup"] = entry_setup
+        out["entry_reason"] = entry_reason
         out["signal"] = out["state_signal"]
         out["trade_signal"] = out["entry_setup"]
 

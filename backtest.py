@@ -441,11 +441,12 @@ class Backtester:
                             "breakout_age_at_entry": float(row.get("bars_since_breakout_long", np.nan) if side == 1 else row.get("bars_since_breakout_short", np.nan)),
                             "rejection_type": row.get("rejection_type_long", "none") if side == 1 else row.get("rejection_type_short", "none"),
                             "first_pullback_flag": bool(row.get("first_pullback_ok_long", False) if side == 1 else row.get("first_pullback_ok_short", False)),
-                            "entry_reason": "breakout->pullback->rejection",
+                            "entry_reason": row.get("entry_reason", "breakout->pullback->rejection"),
                             "entry_regime_snapshot": {
                                 "regime_ok": bool(row.get("regime_ok", True)),
                                 "adx_4h": float(row.get("adx_4h", np.nan)),
                                 "trend_strength_4h": float(row.get("trend_strength_4h", np.nan)),
+                                "continuation_setup_long": bool(row.get("continuation_setup_long", False)),
                             },
                             "entry_risk_per_unit": float(self.entry_risk) if self.entry_risk is not None else np.nan,
                             "initial_risk_cash": abs(float(order_qty)) * float(self.entry_risk) if (self.entry_risk is not None and order_qty is not None) else np.nan,
