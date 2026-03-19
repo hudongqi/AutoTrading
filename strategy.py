@@ -160,6 +160,8 @@ class BTCPerpPullbackStrategy1H:
         first_pullback_only=True,
         max_pullbacks_long=1,
         max_pullbacks_short=1,
+        min_breakout_age_long=1,
+        min_breakout_age_short=1,
         rejection_wick_ratio_long=0.8,
         rejection_wick_ratio_short=0.8,
         allow_short=True,
@@ -183,6 +185,8 @@ class BTCPerpPullbackStrategy1H:
         self.first_pullback_only = first_pullback_only
         self.max_pullbacks_long = max_pullbacks_long
         self.max_pullbacks_short = max_pullbacks_short
+        self.min_breakout_age_long = min_breakout_age_long
+        self.min_breakout_age_short = min_breakout_age_short
         self.rejection_wick_ratio_long = rejection_wick_ratio_long
         self.rejection_wick_ratio_short = rejection_wick_ratio_short
         self.allow_short = allow_short
@@ -330,7 +334,7 @@ class BTCPerpPullbackStrategy1H:
                     reject_ok = bool(out.iloc[i]["reject_long"])
                     state_ok = int(out.iloc[i]["state_signal"]) == 1
 
-                    if (age >= min_age) and touch and p_depth_ok_l[i] and first_ok and reject_ok and state_ok:
+                    if (age >= max(min_age, self.min_breakout_age_long)) and touch and p_depth_ok_l[i] and first_ok and reject_ok and state_ok:
                         entry_setup[i] = 1
 
             # SHORT path
@@ -361,7 +365,7 @@ class BTCPerpPullbackStrategy1H:
                     reject_ok = bool(out.iloc[i]["reject_short"])
                     state_ok = int(out.iloc[i]["state_signal"]) == -1
 
-                    if (age >= min_age) and touch and p_depth_ok_s[i] and first_ok and reject_ok and state_ok:
+                    if (age >= max(min_age, self.min_breakout_age_short)) and touch and p_depth_ok_s[i] and first_ok and reject_ok and state_ok:
                         entry_setup[i] = -1
 
         out["breakout_event_long"] = b_event_l
