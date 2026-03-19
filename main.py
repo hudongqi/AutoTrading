@@ -1,3 +1,4 @@
+import argparse
 import json
 from pathlib import Path
 
@@ -6,18 +7,14 @@ import numpy as np
 
 from config import *
 from data import CCXTDataSource
-from strategy import BTCPerpTrendStrategy1H, BTCPerpPullbackStrategy1H
+from strategy import BTCPerpPullbackStrategy1H
+from strategy_profiles import get_strategy_profile, list_profiles, BACKTEST_COMMON
 from portfolio import PerpPortfolio
 from broker import SimBroker
 from backtest import Backtester
 
 
 def load_research_overlay(event_file="event_signals.json"):
-    """
-    交易过滤层（研究层）:
-    - 技术策略决定 setup
-    - 研究层决定是否允许开仓、是否降风险
-    """
     defaults = {
         "block_new_entries": False,
         "reduce_risk": False,
@@ -61,35 +58,14 @@ def load_research_overlay(event_file="event_signals.json"):
     }
 
 
-def run_case(
-    name: str,
-    df_sig,
-    strat,
-    entry_is_maker=False,
-    funding_rate_per_8h=0.0,
-    leverage=2.0,
-    max_pos=0.8,
-    cooldown_bars=3,
-    stop_atr=1.5,
-    take_R=3.5,
-    trail_start_R=1.5,
-    trail_atr=2.0,
-    risk_per_trade=0.0075,
-    enable_risk_position_sizing=True,
-    allow_reentry=True,
-    partial_take_R=0.0,
-    partial_take_frac=0.0,
-    show_result_tail=False,
-    debug_breakpoint=False,
-    research_overlay=None,
-):
+def run_case(name: str, df_sig, strat, research_overlay=None, show_result_tail=True, debug_breakpoint=False, **params):
     research_overlay = research_overlay or load_research_overlay()
+    cfg = {**BACKTEST_COMMON, **params}
 
+    leverage = max(1.0, cfg["leverage"] * research_overlay["leverage_mult"])
+    max_pos = max(0.0, cfg["max_pos"] * research_overlay["max_pos_mult"])
     if research_overlay["block_new_entries"]:
         max_pos = 0.0
-
-    leverage = max(1.0, leverage * research_overlay["leverage_mult"])
-    max_pos = max(0.0, max_pos * research_overlay["max_pos_mult"])
 
     portfolio = PerpPortfolio(
         initial_cash=INITIAL_CASH,
@@ -105,20 +81,20 @@ def run_case(
         portfolio=portfolio,
         strategy=strat,
         max_pos=max_pos,
-        cooldown_bars=cooldown_bars,
-        stop_atr=stop_atr,
-        take_R=take_R,
-        trail_start_R=trail_start_R,
-        trail_atr=trail_atr,
+        cooldown_bars=cfg["cooldown_bars"],
+        stop_atr=cfg["stop_atr"],
+        take_R=cfg["take_R"],
+        trail_start_R=cfg["trail_start_R"],
+        trail_atr=cfg["trail_atr"],
         use_trailing=True,
         check_liq=True,
-        entry_is_maker=entry_is_maker,
-        funding_rate_per_8h=funding_rate_per_8h,
-        risk_per_trade=risk_per_trade,
-        enable_risk_position_sizing=enable_risk_position_sizing,
-        allow_reentry=allow_reentry,
-        partial_take_R=partial_take_R,
-        partial_take_frac=partial_take_frac,
+        entry_is_maker=cfg["entry_is_maker"],
+        funding_rate_per_8h=FUNDING_RATE_PER_8H,
+        risk_per_trade=cfg["risk_per_trade"],
+        enable_risk_position_sizing=cfg["enable_risk_position_sizing"],
+        allow_reentry=cfg["allow_reentry"],
+        partial_take_R=cfg["partial_take_R"],
+        partial_take_frac=cfg["partial_take_frac"],
     )
 
     result = bt.run(df_sig)
@@ -128,7 +104,6 @@ def run_case(
 
     if show_result_tail:
         print(result[["close", "position", "equity", "margin_used", "free_margin", "exit_reason"]].tail(20))
-
     if debug_breakpoint:
         breakpoint()
 
@@ -140,7 +115,6 @@ def run_case(
     print("fees:", f"{stats.get('total_fees', 0.0):.4f}")
     print("funding_total:", f"{stats.get('funding_total', 0.0):.4f}")
     print("win_rate:", f"{stats.get('win_rate', 0.0):.2%}")
-
     pnl_ratio = stats.get("pnl_ratio", float("nan"))
     print("pnl_ratio:", f"{pnl_ratio:.2f}" if pd.notna(pnl_ratio) else "N/A")
     print("expectancy_per_trade:", f"{stats.get('expectancy_per_trade', 0.0):.4f}")
@@ -152,68 +126,40 @@ def run_case(
     print("mfe_avg:", f"{stats.get('mfe_avg', 0.0):.2f}", "mae_avg:", f"{stats.get('mae_avg', 0.0):.2f}")
     print("fees_per_trade:", f"{stats.get('fees_per_trade', 0.0):.4f}")
     print("gross_closed_pnl:", f"{stats.get('gross_closed_pnl', 0.0):.2f}", "net_closed_pnl:", f"{stats.get('net_closed_pnl', 0.0):.2f}")
-    print("long_side:", stats.get("long_side", {}))
-    print("short_side:", stats.get("short_side", {}))
-    print("worst_trades_summary:", stats.get("worst_trades_summary", {}))
-    print("rejected_reason_count:", stats.get("rejected_reason_count", {}))
 
     return {
-        "case": name,
+        "profile": name,
         "final_equity": float(result['equity'].iloc[-1]),
         "return": float(result['equity'].iloc[-1] / INITIAL_CASH - 1),
         "max_drawdown": float(max_dd),
+        "trade_count": int(stats.get('closed_trade_count', 0)),
         "fees": float(stats.get('total_fees', 0.0)),
         "win_rate": float(stats.get('win_rate', 0.0)),
         "pnl_ratio": float(stats.get('pnl_ratio', float('nan'))) if pd.notna(stats.get('pnl_ratio', float('nan'))) else np.nan,
         "profit_factor": float(stats.get('profit_factor', float('nan'))) if pd.notna(stats.get('profit_factor', float('nan'))) else np.nan,
+        "expectancy_per_trade": float(stats.get('expectancy_per_trade', 0.0)),
+        "gross_closed_pnl": float(stats.get('gross_closed_pnl', 0.0)),
+        "net_closed_pnl": float(stats.get('net_closed_pnl', 0.0)),
+        "fees_per_trade": float(stats.get('fees_per_trade', 0.0)),
     }
 
 
+def build_strategy(profile_name: str):
+    return BTCPerpPullbackStrategy1H(**get_strategy_profile(profile_name))
+
+
 def main():
+    parser = argparse.ArgumentParser(description="Run main backtest for a strategy profile")
+    parser.add_argument("--profile", default="v6_1_default", choices=list_profiles())
+    args = parser.parse_args()
+
     ds = CCXTDataSource()
     df = ds.load_ohlcv(SYMBOL, START, END)
-
     overlay = load_research_overlay("event_signals.json")
 
-    # 当前默认版本：V6
-    strat_v6 = BTCPerpPullbackStrategy1H(
-        adx_threshold_4h=28,
-        trend_strength_threshold_4h=0.0055,
-        breakout_confirm_atr=0.12,
-        breakout_body_atr=0.20,
-        pullback_bars=4,
-        pullback_max_depth_atr=0.40,
-        first_pullback_only=False,
-        max_pullbacks_long=3,
-        max_pullbacks_short=1,
-        min_breakout_age_long=2,
-        rejection_wick_ratio_long=0.65,
-        rejection_wick_ratio_short=0.80,
-        allow_short=False,
-        allow_same_bar_entry=False,
-        breakout_valid_bars=12,
-        atr_pct_low=0.0030,
-        atr_pct_high=0.016,
-    )
-    df_sig_v6 = strat_v6.generate_signals(df)
-
-    run_case(
-        "LIVE_LIKE_PULLBACK_RISK_V6_LONG_RELAXED",
-        df_sig_v6,
-        strat_v6,
-        entry_is_maker=False,
-        funding_rate_per_8h=FUNDING_RATE_PER_8H,
-        leverage=2.0,
-        max_pos=0.8,
-        cooldown_bars=3,
-        stop_atr=1.4,
-        take_R=2.6,
-        trail_start_R=1.0,
-        trail_atr=2.2,
-        show_result_tail=True,
-        debug_breakpoint=False,
-        research_overlay=overlay,
-    )
+    strat = build_strategy(args.profile)
+    df_sig = strat.generate_signals(df)
+    run_case(f"LIVE_LIKE_{args.profile}", df_sig, strat, show_result_tail=True, research_overlay=overlay)
 
 
 if __name__ == "__main__":
