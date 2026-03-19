@@ -165,8 +165,11 @@ def build_strategy(profile_name: str):
 
 def main():
     parser = argparse.ArgumentParser(description="Run main backtest for a strategy profile")
-    parser.add_argument("--profile", default="v6_1_default", choices=list_profiles())
-    parser.add_argument("--exit-profile", default="exit_baseline", choices=list_exit_profiles())
+    parser.add_argument("--profile", default="v6_2_sample_up", choices=list_profiles())
+    parser.add_argument("--exit-profile", default="exit_loose_runner", choices=list_exit_profiles())
+    parser.add_argument("--leverage", type=float, default=3.0)
+    parser.add_argument("--max-pos", type=float, default=1.2)
+    parser.add_argument("--risk-per-trade", type=float, default=0.015)
     args = parser.parse_args()
 
     ds = CCXTDataSource()
@@ -175,7 +178,17 @@ def main():
 
     strat = build_strategy(args.profile)
     df_sig = strat.generate_signals(df)
-    run_case(f"LIVE_LIKE_{args.profile}_{args.exit_profile}", df_sig, strat, show_result_tail=True, research_overlay=overlay, exit_profile=args.exit_profile)
+    run_case(
+        f"LIVE_LIKE_{args.profile}_{args.exit_profile}",
+        df_sig,
+        strat,
+        show_result_tail=True,
+        research_overlay=overlay,
+        exit_profile=args.exit_profile,
+        leverage=args.leverage,
+        max_pos=args.max_pos,
+        risk_per_trade=args.risk_per_trade,
+    )
 
 
 if __name__ == "__main__":

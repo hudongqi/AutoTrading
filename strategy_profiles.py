@@ -36,6 +36,12 @@ STRATEGY_PROFILES = {
         "min_breakout_age_long": 2,
         "rejection_wick_ratio_long": 0.65,
     },
+    "v6_2_sample_up": {
+        **COMMON_V6,
+        "pullback_max_depth_atr": 0.40,
+        "min_breakout_age_long": 1,
+        "rejection_wick_ratio_long": 0.65,
+    },
 }
 
 BACKTEST_COMMON = {
