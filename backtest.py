@@ -32,6 +32,10 @@ class Backtester:
         partial_take_frac: float = 0.0,
         break_even_after_partial: bool = False,
         break_even_R: float = 0.0,
+        allow_pyramid: bool = False,
+        pyramid_trigger_R: float = 1.0,
+        pyramid_add_frac: float = 0.5,
+        max_pyramids: int = 1,
     ):
         self.broker = broker
         self.portfolio = portfolio
@@ -53,12 +57,17 @@ class Backtester:
         self.partial_take_frac = float(partial_take_frac)
         self.break_even_after_partial = bool(break_even_after_partial)
         self.break_even_R = float(break_even_R)
+        self.allow_pyramid = bool(allow_pyramid)
+        self.pyramid_trigger_R = float(pyramid_trigger_R)
+        self.pyramid_add_frac = float(pyramid_add_frac)
+        self.max_pyramids = int(max_pyramids)
 
         self.cur_stop = None
         self.cur_take = None
         self.entry_price = None
         self.entry_risk = None
         self.partial_taken = False
+        self.pyramids_done = 0
 
         self.trade_count = 0
         self.reversal_count = 0
@@ -258,6 +267,7 @@ class Backtester:
         self.entry_price = None
         self.entry_risk = None
         self.partial_taken = False
+        self.pyramids_done = 0
 
         return {"exit_reason": reason, "exit_price": float(fill)}
 
@@ -421,6 +431,7 @@ class Backtester:
                         self._set_brackets(entry_price=float(fill), atr=atr, side=side, res7=res7, sup7=sup7)
                         self.entry_risk = abs(self.entry_price - self.cur_stop) if self.cur_stop is not None else None
                         self.partial_taken = False
+                        self.pyramids_done = 0
                         self.current_trade = {
                             "entry_time": ts,
                             "entry_index": i,
@@ -485,6 +496,26 @@ class Backtester:
                     "breakout_level_long": float(row.get("breakout_level_long", np.nan)),
                     "breakout_level_short": float(row.get("breakout_level_short", np.nan)),
                 })
+
+            # ========== B1.5) 同主链路盈利方向加仓（仅 pyramid，不新增 setup 类型） ==========
+            st = self.portfolio.state
+            current_pos = float(st.position)
+            if self.allow_pyramid and current_pos > 0 and signal == 1 and entry_trigger == 1 and self.current_trade is not None:
+                profit = close - float(self.entry_price) if self.entry_price is not None else 0.0
+                if self.entry_risk is not None and self.entry_risk > 0 and profit >= self.pyramid_trigger_R * self.entry_risk and self.pyramids_done < self.max_pyramids:
+                    base_add = abs(current_pos) * self.pyramid_add_frac
+                    margin_cap = min(self.max_pos, self.portfolio.max_qty_by_margin(close))
+                    add_qty = min(base_add, max(0.0, margin_cap - abs(current_pos)))
+                    if add_qty > 0:
+                        fill = self.broker.fill_price(close, add_qty)
+                        fill_info = self.portfolio.apply_fill(fill_price=fill, qty=add_qty, is_maker=self.entry_is_maker)
+                        self.trade_count += 1
+                        self.pyramids_done += 1
+                        bar_order_qty += float(add_qty)
+                        bar_fee += float(fill_info.get("fee", 0.0)) if fill_info else 0.0
+                        if self.current_trade is not None:
+                            self.current_trade["fee_accum"] = self.current_trade.get("fee_accum", 0.0) + float(fill_info.get("fee", 0.0))
+                            self.current_trade.setdefault("pyramids", []).append({"time": ts, "qty": float(add_qty), "price": float(fill)})
 
             # ========== B2) Funding 成本/收益模拟 ==========
             funding_cashflow = 0.0
