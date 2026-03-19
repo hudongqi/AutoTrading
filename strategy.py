@@ -343,20 +343,27 @@ class BTCPerpPullbackStrategy1H:
         out["first_pullback_ok_long"] = first_pb_l
         out["first_pullback_ok_short"] = first_pb_s
 
-        # 第二套 continuation setup：趋势中 EMA20 上方压缩后再发力
+        # 第二套 breakout family setup：突破后的二次延续再突破
+        # 不做 EMA reclaim，而是要求：
+        # 1) 已发生有效 breakout
+        # 2) 价格仍站在 breakout level/EMA 上方
+        # 3) 完成一次健康浅回踩
+        # 4) 再次突破近 continuation_window 根高点
         out["continuation_setup_long"] = False
         if self.enable_continuation_long:
             rolling_max_prev = out["high"].rolling(self.continuation_window).max().shift(1)
             ema_buf = self.continuation_ema_buffer_atr * out["atr"]
-            continuation_touch = (out["low"] >= (out["ema_entry"] - ema_buf)) & (out["low"] <= (out["ema_entry"] + ema_buf))
+            healthy_hold = (out["low"] >= (out["ema_entry"] - ema_buf)) & (out["close"] >= out["ema_entry"])
+            above_break_level = out["close"] >= (out["breakout_level_long"].ffill())
             continuation_break = out["close"] > rolling_max_prev
             continuation_body_ok = body >= self.continuation_body_atr * out["atr"]
+            recent_shallow_pullback = out["pullback_touch_long"].shift(1).rolling(self.continuation_cooldown_bars).max().fillna(0).astype(bool) & (out["pullback_depth_long"].shift(1).fillna(np.inf) <= self.pullback_max_depth_atr)
             continuation_state_ok = (out["state_signal"] == 1) & out["regime_ok"]
-            cont_setup = continuation_state_ok & continuation_touch.shift(1).rolling(self.continuation_cooldown_bars).max().fillna(0).astype(bool) & continuation_break & continuation_body_ok & out["reject_long"]
+            cont_setup = continuation_state_ok & healthy_hold & above_break_level & recent_shallow_pullback & continuation_break & continuation_body_ok
             out["continuation_setup_long"] = cont_setup
             fill_mask = (entry_setup == 0) & cont_setup.fillna(False).to_numpy()
             entry_setup[fill_mask] = 1
-            entry_reason[fill_mask] = "trend_continuation_reclaim"
+            entry_reason[fill_mask] = "breakout_rebreak_continuation"
 
         out["entry_setup"] = entry_setup
         out["entry_reason"] = entry_reason
