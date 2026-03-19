@@ -175,132 +175,7 @@ def main():
 
     overlay = load_research_overlay("event_signals.json")
 
-    reports = []
-
-    # 改造前（宽松版）
-    strat_v2 = BTCPerpPullbackStrategy1H(
-        adx_threshold_4h=30,
-        trend_strength_threshold_4h=0.006,
-        breakout_confirm_atr=0.15,
-        breakout_body_atr=0.25,
-        pullback_bars=3,
-        pullback_max_depth_atr=0.60,
-        first_pullback_only=False,
-        allow_same_bar_entry=True,
-        atr_pct_low=0.0035,
-        atr_pct_high=0.015,
-    )
-    df_sig_v2 = strat_v2.generate_signals(df)
-    reports.append(run_case(
-        "LIVE_LIKE_PULLBACK_RISK_V2_BASELINE",
-        df_sig_v2,
-        strat_v2,
-        entry_is_maker=False,
-        funding_rate_per_8h=FUNDING_RATE_PER_8H,
-        leverage=2.0,
-        max_pos=0.8,
-        cooldown_bars=3,
-        stop_atr=1.4,
-        take_R=2.6,
-        trail_start_R=1.0,
-        trail_atr=2.2,
-        show_result_tail=False,
-        debug_breakpoint=False,
-        research_overlay=overlay,
-    ))
-
-    # 改造后（严格过滤版）
-    strat_v3 = BTCPerpPullbackStrategy1H(
-        adx_threshold_4h=30,
-        trend_strength_threshold_4h=0.006,
-        breakout_confirm_atr=0.15,
-        breakout_body_atr=0.25,
-        pullback_bars=3,
-        pullback_max_depth_atr=0.60,
-        first_pullback_only=True,
-        allow_same_bar_entry=False,
-        breakout_valid_bars=10,
-        atr_pct_low=0.0035,
-        atr_pct_high=0.015,
-    )
-    df_sig_v3 = strat_v3.generate_signals(df)
-    reports.append(run_case(
-        "LIVE_LIKE_PULLBACK_RISK_V3_FILTERED",
-        df_sig_v3,
-        strat_v3,
-        entry_is_maker=False,
-        funding_rate_per_8h=FUNDING_RATE_PER_8H,
-        leverage=2.0,
-        max_pos=0.8,
-        cooldown_bars=3,
-        stop_atr=1.4,
-        take_R=2.6,
-        trail_start_R=1.0,
-        trail_atr=2.2,
-        show_result_tail=False,
-        debug_breakpoint=False,
-        research_overlay=overlay,
-    ))
-
-    # V4：保留时序化，但 long 侧适度放宽，short 继续关闭
-    strat_v4 = BTCPerpPullbackStrategy1H(
-        adx_threshold_4h=30,
-        trend_strength_threshold_4h=0.006,
-        breakout_confirm_atr=0.15,
-        breakout_body_atr=0.25,
-        pullback_bars=3,
-        pullback_max_depth_atr=0.75,
-        first_pullback_only=False,
-        max_pullbacks_long=2,
-        max_pullbacks_short=1,
-        rejection_wick_ratio_long=0.55,
-        rejection_wick_ratio_short=0.80,
-        allow_short=False,
-        allow_same_bar_entry=False,
-        breakout_valid_bars=10,
-        atr_pct_low=0.0035,
-        atr_pct_high=0.015,
-    )
-    df_sig_v4 = strat_v4.generate_signals(df)
-    reports.append(run_case(
-        "LIVE_LIKE_PULLBACK_RISK_V4_LONG_BIASED",
-        df_sig_v4,
-        strat_v4,
-        entry_is_maker=False,
-        funding_rate_per_8h=FUNDING_RATE_PER_8H,
-        leverage=2.0,
-        max_pos=0.8,
-        cooldown_bars=3,
-        stop_atr=1.4,
-        take_R=2.6,
-        trail_start_R=1.0,
-        trail_atr=2.2,
-        show_result_tail=False,
-        debug_breakpoint=False,
-        research_overlay=overlay,
-    ))
-
-    reports.append(run_case(
-        "LIVE_LIKE_PULLBACK_RISK_V5_LONG_PARTIAL",
-        df_sig_v4,
-        strat_v4,
-        entry_is_maker=False,
-        funding_rate_per_8h=FUNDING_RATE_PER_8H,
-        leverage=2.0,
-        max_pos=0.8,
-        cooldown_bars=3,
-        stop_atr=1.4,
-        take_R=2.6,
-        trail_start_R=1.0,
-        trail_atr=2.2,
-        partial_take_R=1.5,
-        partial_take_frac=0.5,
-        show_result_tail=False,
-        debug_breakpoint=False,
-        research_overlay=overlay,
-    ))
-
-    # V6：继续 long-only，但适度放宽“优质回踩”样本
+    # 当前默认版本：V6
     strat_v6 = BTCPerpPullbackStrategy1H(
         adx_threshold_4h=28,
         trend_strength_threshold_4h=0.0055,
@@ -320,7 +195,8 @@ def main():
         atr_pct_high=0.016,
     )
     df_sig_v6 = strat_v6.generate_signals(df)
-    reports.append(run_case(
+
+    run_case(
         "LIVE_LIKE_PULLBACK_RISK_V6_LONG_RELAXED",
         df_sig_v6,
         strat_v6,
@@ -336,19 +212,7 @@ def main():
         show_result_tail=True,
         debug_breakpoint=False,
         research_overlay=overlay,
-    ))
-
-    print("\n==== BEFORE vs AFTER SUMMARY ====")
-    rep = pd.DataFrame(reports)
-    print(rep.to_string(index=False, formatters={
-        "return": lambda x: f"{x:.2%}",
-        "max_drawdown": lambda x: f"{x:.2%}",
-        "fees": lambda x: f"{x:.2f}",
-        "win_rate": lambda x: f"{x:.2%}",
-        "pnl_ratio": lambda x: f"{x:.2f}" if pd.notna(x) else "N/A",
-        "profit_factor": lambda x: f"{x:.2f}" if pd.notna(x) else "N/A",
-        "final_equity": lambda x: f"{x:.2f}",
-    }))
+    )
 
 
 if __name__ == "__main__":
