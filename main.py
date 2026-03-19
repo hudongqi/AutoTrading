@@ -186,7 +186,7 @@ def main():
         first_pullback_only=False,
         max_pullbacks_long=3,
         max_pullbacks_short=1,
-        min_breakout_age_long=3,
+        min_breakout_age_long=2,
         rejection_wick_ratio_long=0.65,
         rejection_wick_ratio_short=0.80,
         allow_short=False,
