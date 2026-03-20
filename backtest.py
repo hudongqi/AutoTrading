@@ -32,6 +32,8 @@ class Backtester:
         partial_take_frac: float = 0.0,
         break_even_after_partial: bool = False,
         break_even_R: float = 0.0,
+        use_signal_exit_targets: bool = False,
+        max_hold_bars: int = 0,
         allow_pyramid: bool = False,
         pyramid_trigger_R: float = 1.0,
         pyramid_add_frac: float = 0.5,
@@ -57,6 +59,8 @@ class Backtester:
         self.partial_take_frac = float(partial_take_frac)
         self.break_even_after_partial = bool(break_even_after_partial)
         self.break_even_R = float(break_even_R)
+        self.use_signal_exit_targets = bool(use_signal_exit_targets)
+        self.max_hold_bars = int(max_hold_bars)
         self.allow_pyramid = bool(allow_pyramid)
         self.pyramid_trigger_R = float(pyramid_trigger_R)
         self.pyramid_add_frac = float(pyramid_add_frac)
@@ -307,10 +311,18 @@ class Backtester:
             # ========== A) 先检查止损/止盈 ==========
             if pos != 0 and (self.cur_stop is not None) and (self.cur_take is not None):
                 side = 1 if pos > 0 else -1
+                signal_take = np.nan
+                signal_take2 = np.nan
+                if self.use_signal_exit_targets:
+                    signal_take = float(row.get("take_price_signal_long", np.nan) if side == 1 else row.get("take_price_signal_short", np.nan))
+                    signal_take2 = float(row.get("take_price_signal2_long", np.nan) if side == 1 else row.get("take_price_signal2_short", np.nan))
+                    if np.isfinite(signal_take):
+                        self.cur_take = signal_take
 
                 if side == 1:
                     hit_stop = low <= self.cur_stop # 止损线
                     hit_take = high >= self.cur_take
+                    hit_take2 = np.isfinite(signal_take2) and high >= signal_take2
                     partial_take_price = self.entry_price + self.partial_take_R * self.entry_risk if (self.entry_price is not None and self.entry_risk is not None and self.partial_take_R > 0) else None
                     hit_partial = (not self.partial_taken) and (partial_take_price is not None) and (high >= partial_take_price)
 
@@ -325,8 +337,13 @@ class Backtester:
                         self.partial_taken = True
                         if self.break_even_after_partial:
                             self.cur_stop = max(self.cur_stop, self.entry_price)
+                    elif hit_take2:
+                        evt = self._close_position(exit_mid_price=signal_take2, reason="MEAN_TAKE_2")
+                        exit_reason, exit_price = evt["exit_reason"], evt["exit_price"]
+                        if exit_reason is not None:
+                            last_exit_idx = i
                     elif hit_take:
-                        evt = self._close_position(exit_mid_price=self.cur_take, reason="TAKE")
+                        evt = self._close_position(exit_mid_price=self.cur_take, reason="MEAN_TAKE_1" if self.use_signal_exit_targets else "TAKE")
                         exit_reason, exit_price = evt["exit_reason"], evt["exit_price"]
                         if exit_reason is not None:
                             last_exit_idx = i
@@ -334,6 +351,7 @@ class Backtester:
                 else:
                     hit_stop = high >= self.cur_stop
                     hit_take = low <= self.cur_take
+                    hit_take2 = np.isfinite(signal_take2) and low <= signal_take2
                     partial_take_price = self.entry_price - self.partial_take_R * self.entry_risk if (self.entry_price is not None and self.entry_risk is not None and self.partial_take_R > 0) else None
                     hit_partial = (not self.partial_taken) and (partial_take_price is not None) and (low <= partial_take_price)
 
@@ -347,8 +365,13 @@ class Backtester:
                         self.partial_taken = True
                         if self.break_even_after_partial:
                             self.cur_stop = min(self.cur_stop, self.entry_price)
+                    elif hit_take2:
+                        evt = self._close_position(exit_mid_price=signal_take2, reason="MEAN_TAKE_2")
+                        exit_reason, exit_price = evt["exit_reason"], evt["exit_price"]
+                        if exit_reason is not None:
+                            last_exit_idx = i
                     elif hit_take:
-                        evt = self._close_position(exit_mid_price=self.cur_take, reason="TAKE")
+                        evt = self._close_position(exit_mid_price=self.cur_take, reason="MEAN_TAKE_1" if self.use_signal_exit_targets else "TAKE")
                         exit_reason, exit_price = evt["exit_reason"], evt["exit_price"]
                         if exit_reason is not None:
                             last_exit_idx = i
@@ -357,8 +380,15 @@ class Backtester:
             st = self.portfolio.state
             pos = float(st.position)
 
-            # ========== B0) 趋势失效先平仓（但不反手） ==========
+            # ========== B0) 趋势失效 / 时间止损先平仓（但不反手） ==========
             signal = int(row["signal"])
+            if pos != 0 and self.current_trade is not None and self.max_hold_bars > 0 and self.current_trade.get("holding_bars", 0) >= self.max_hold_bars:
+                evt = self._close_position(exit_mid_price=close, reason="TIME_STOP")
+                if evt["exit_reason"] is not None:
+                    exit_reason, exit_price = evt["exit_reason"], evt["exit_price"]
+                    last_exit_idx = i
+                pos = float(self.portfolio.state.position)
+
             if pos > 0 and signal == -1:
                 self.reversal_count += 1
                 bar_reversal = True

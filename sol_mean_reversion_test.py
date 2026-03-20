@@ -32,6 +32,14 @@ class SOLMeanReversionStrategy1H:
         adx_cap_4h=32,
         atr_pct_low=0.004,
         atr_pct_high=0.05,
+        require_break_prev_high=True,
+        require_bullish=True,
+        reclaim_mode='ema',
+        oversold_lookback=3,
+        use_mean_targets=False,
+        mean_target='bb_mid',
+        second_target='bb_upper',
+        time_stop_bars=0,
     ):
         self.atr_period = atr_period
         self.bb_period = bb_period
@@ -44,6 +52,14 @@ class SOLMeanReversionStrategy1H:
         self.adx_cap_4h = adx_cap_4h
         self.atr_pct_low = atr_pct_low
         self.atr_pct_high = atr_pct_high
+        self.require_break_prev_high = require_break_prev_high
+        self.require_bullish = require_bullish
+        self.reclaim_mode = reclaim_mode
+        self.oversold_lookback = oversold_lookback
+        self.use_mean_targets = use_mean_targets
+        self.mean_target = mean_target
+        self.second_target = second_target
+        self.time_stop_bars = time_stop_bars
 
     @staticmethod
     def _atr(df, period=14):
@@ -103,16 +119,46 @@ class SOLMeanReversionStrategy1H:
         )
 
         oversold = (out['close'] < out['bb_lower']) & (out['rsi'] <= self.rsi_oversold)
-        reclaim = out['close'] >= (out['ema20'] + self.reclaim_confirm_atr * out['atr'])
-        bullish = out['close'] > out['open']
-        break_prev_high = out['close'] > out['high'].shift(1)
+        reclaim_ema = out['close'] >= (out['ema20'] + self.reclaim_confirm_atr * out['atr'])
+        reclaim_bb = out['close'] >= out['bb_lower']
+        reclaim_prev_close = out['close'] > out['close'].shift(1)
+        if self.reclaim_mode == 'bb_in':
+            reclaim = reclaim_bb
+        elif self.reclaim_mode == 'prev_close':
+            reclaim = reclaim_prev_close
+        elif self.reclaim_mode == 'any':
+            reclaim = reclaim_ema | reclaim_bb | reclaim_prev_close
+        else:
+            reclaim = reclaim_ema
 
-        out['entry_setup'] = np.where(oversold.shift(1).rolling(3).max().fillna(0).astype(bool) & reclaim & bullish & break_prev_high & regime_ok, 1, 0)
+        bullish = (out['close'] > out['open']) if self.require_bullish else pd.Series(True, index=out.index)
+        break_prev_high = (out['close'] > out['high'].shift(1)) if self.require_break_prev_high else pd.Series(True, index=out.index)
+        recent_oversold = oversold.shift(1).rolling(self.oversold_lookback).max().fillna(0).astype(bool)
+
+        out['entry_setup'] = np.where(recent_oversold & reclaim & bullish & break_prev_high & regime_ok, 1, 0)
         out['signal'] = np.where(regime_ok, 1, 0)
         out['trade_signal'] = out['entry_setup']
         out['entry_reason'] = np.where(out['entry_setup'] == 1, 'sol_mean_reversion_reclaim', 'none')
         out['resistance_7d'] = out['high'].rolling(24 * 7, min_periods=24 * 7).max()
         out['support_7d'] = out['low'].rolling(24 * 7, min_periods=24 * 7).min()
+        out['zscore'] = (out['close'] - out['bb_mid']) / out['bb_std'].replace(0, np.nan)
+
+        if self.use_mean_targets:
+            out['take_price_signal_long'] = np.where(
+                self.mean_target == 'ema20',
+                out['ema20'],
+                out['bb_mid'],
+            )
+            if self.second_target == 'zscore0':
+                out['take_price_signal2_long'] = out['bb_mid']
+            elif self.second_target == 'ema20':
+                out['take_price_signal2_long'] = out['ema20']
+            else:
+                out['take_price_signal2_long'] = out['bb_upper']
+        else:
+            out['take_price_signal_long'] = np.nan
+            out['take_price_signal2_long'] = np.nan
+
         print('state long true:', float((out['signal'] == 1).mean()))
         print('entry long setup:', float((out['entry_setup'] == 1).mean()))
         return out.dropna(subset=['atr', 'ema20', 'bb_lower', 'adx_4h'])
@@ -132,6 +178,7 @@ def run_variant(name, strat, backtest_cfg):
         take_R=backtest_cfg['take_R'],
         trail_start_R=backtest_cfg['trail_start_R'],
         trail_atr=backtest_cfg['trail_atr'],
+        use_trailing=backtest_cfg.get('use_trailing', True),
         funding_rate_per_8h=FUNDING_RATE_PER_8H,
         risk_per_trade=backtest_cfg['risk_per_trade'],
         enable_risk_position_sizing=True,
@@ -140,6 +187,8 @@ def run_variant(name, strat, backtest_cfg):
         partial_take_frac=backtest_cfg.get('partial_take_frac', 0.0),
         break_even_after_partial=backtest_cfg.get('break_even_after_partial', False),
         break_even_R=backtest_cfg.get('break_even_R', 0.0),
+        use_signal_exit_targets=backtest_cfg.get('use_signal_exit_targets', False),
+        max_hold_bars=backtest_cfg.get('max_hold_bars', 0),
     )
     out = bt.run(sig)
     st = out.attrs.get('stats', {})
@@ -147,26 +196,38 @@ def run_variant(name, strat, backtest_cfg):
     eq = out['equity']
     dd = (eq / eq.cummax() - 1).min()
     remove_best = None
-    if not trades.empty and 'realized_net' in trades.columns and len(trades) > 1:
+    avg_net = 0.0
+    gross_fee_ratio = np.nan
+    exit_reason_split = st.get('exit_reason_split', {})
+    if not trades.empty and 'realized_net' in trades.columns:
         trades = trades.copy()
         trades['realized_net'] = trades['realized_net'].astype(float)
-        remove_best = float(trades.drop(trades['realized_net'].idxmax())['realized_net'].sum())
+        avg_net = float(trades['realized_net'].mean())
+        if len(trades) > 1:
+            remove_best = float(trades.drop(trades['realized_net'].idxmax())['realized_net'].sum())
+    fees = float(st.get('total_fees', 0.0))
+    gross = float(st.get('gross_closed_pnl', 0.0))
+    if fees > 0:
+        gross_fee_ratio = gross / fees
     return {
         'variant': name,
         'return': float(eq.iloc[-1] / INITIAL_CASH - 1),
         'max_drawdown': float(dd),
         'trade_count': int(st.get('closed_trade_count', 0)),
-        'fees': float(st.get('total_fees', 0.0)),
-        'gross_closed_pnl': float(st.get('gross_closed_pnl', 0.0)),
+        'fees': fees,
+        'gross_closed_pnl': gross,
         'net_closed_pnl': float(st.get('net_closed_pnl', 0.0)),
+        'gross_fee_ratio': gross_fee_ratio,
         'profit_factor': st.get('profit_factor', float('nan')),
         'expectancy_per_trade': float(st.get('expectancy_per_trade', 0.0)),
+        'avg_net_pnl_per_trade': avg_net,
         'remove_best_trade_net': remove_best,
+        'exit_reason_split': exit_reason_split,
     }
 
 
 def main():
-    conservative = {
+    v1_bt = {
         'leverage': 3.0,
         'max_pos': 1.2,
         'risk_per_trade': 0.015,
@@ -179,38 +240,91 @@ def main():
         'partial_take_frac': 0.5,
         'break_even_after_partial': True,
         'break_even_R': 0.8,
+        'use_trailing': True,
     }
-    push = {
-        'leverage': 4.0,
-        'max_pos': 1.5,
-        'risk_per_trade': 0.020,
+    v2_bt = {
+        'leverage': 3.0,
+        'max_pos': 1.2,
+        'risk_per_trade': 0.015,
         'cooldown_bars': 1,
-        'stop_atr': 1.1,
-        'take_R': 2.2,
-        'trail_start_R': 0.9,
-        'trail_atr': 1.8,
-        'partial_take_R': 1.2,
+        'stop_atr': 1.2,
+        'take_R': 1.6,
+        'trail_start_R': 0.7,
+        'trail_atr': 1.5,
+        'partial_take_R': 0.9,
         'partial_take_frac': 0.4,
         'break_even_after_partial': True,
-        'break_even_R': 0.8,
+        'break_even_R': 0.7,
+        'use_trailing': True,
+    }
+    v3_bt = {
+        'leverage': 3.0,
+        'max_pos': 1.2,
+        'risk_per_trade': 0.015,
+        'cooldown_bars': 1,
+        'stop_atr': 1.2,
+        'take_R': 4.0,
+        'trail_start_R': 9.0,
+        'trail_atr': 3.0,
+        'partial_take_R': 0.0,
+        'partial_take_frac': 0.0,
+        'break_even_after_partial': False,
+        'break_even_R': 0.0,
+        'use_trailing': False,
+        'use_signal_exit_targets': True,
+        'max_hold_bars': 10,
     }
 
     rows = [
-        run_variant('SOL_MEAN_REV_V1', SOLMeanReversionStrategy1H(), conservative),
-        run_variant('SOL_MEAN_REV_V1_PUSH', SOLMeanReversionStrategy1H(adx_cap_4h=36, rsi_oversold=34), push),
+        run_variant('SOL_MEAN_REV_V1', SOLMeanReversionStrategy1H(), v1_bt),
+        run_variant(
+            'SOL_MR_V2_FASTER_ENTRY',
+            SOLMeanReversionStrategy1H(
+                reclaim_confirm_atr=0.0,
+                require_break_prev_high=False,
+                require_bullish=False,
+                reclaim_mode='any',
+                rsi_oversold=32,
+                adx_cap_4h=34,
+                oversold_lookback=4,
+            ),
+            v2_bt,
+        ),
+        run_variant(
+            'SOL_MR_V3_MEAN_TARGET_EXIT',
+            SOLMeanReversionStrategy1H(
+                reclaim_confirm_atr=0.0,
+                require_break_prev_high=False,
+                require_bullish=False,
+                reclaim_mode='any',
+                rsi_oversold=32,
+                adx_cap_4h=34,
+                oversold_lookback=4,
+                use_mean_targets=True,
+                mean_target='bb_mid',
+                second_target='bb_upper',
+                time_stop_bars=10,
+            ),
+            v3_bt,
+        ),
     ]
     rep = pd.DataFrame(rows).sort_values('net_closed_pnl', ascending=False)
     print('\n=== SOL MEAN REVERSION TEST ===')
-    print(rep.to_string(index=False, formatters={
+    print(rep.drop(columns=['exit_reason_split']).to_string(index=False, formatters={
         'return': lambda x: f'{x:.2%}',
         'max_drawdown': lambda x: f'{x:.2%}',
         'fees': lambda x: f'{x:.2f}',
         'gross_closed_pnl': lambda x: f'{x:.2f}',
         'net_closed_pnl': lambda x: f'{x:.2f}',
+        'gross_fee_ratio': lambda x: f'{x:.2f}' if pd.notna(x) else 'N/A',
         'profit_factor': lambda x: f'{x:.2f}' if pd.notna(x) else 'N/A',
         'expectancy_per_trade': lambda x: f'{x:.2f}',
+        'avg_net_pnl_per_trade': lambda x: f'{x:.2f}',
         'remove_best_trade_net': lambda x: f'{x:.2f}' if x is not None and pd.notna(x) else 'N/A',
     }))
+    print('\n=== EXIT REASONS ===')
+    for row in rows:
+        print(row['variant'], row['exit_reason_split'])
 
 
 if __name__ == '__main__':
