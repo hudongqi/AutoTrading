@@ -18,6 +18,72 @@ COMMON_V6 = {
     "enable_continuation_long": False,
 }
 
+SOL_MEAN_REVERSION_PROFILES = {
+    "sol_mean_rev_v1": {
+        "atr_period": 14,
+        "bb_period": 20,
+        "bb_std": 2.0,
+        "rsi_period": 14,
+        "rsi_oversold": 30,
+        "reclaim_ema": 20,
+        "reclaim_confirm_atr": 0.05,
+        "adx_period_4h": 14,
+        "adx_cap_4h": 32,
+        "atr_pct_low": 0.004,
+        "atr_pct_high": 0.05,
+        "require_break_prev_high": True,
+        "require_bullish": True,
+        "reclaim_mode": "ema",
+        "oversold_lookback": 3,
+        "use_mean_targets": False,
+        "mean_target": "bb_mid",
+        "second_target": "bb_upper",
+        "time_stop_bars": 0,
+    },
+    "sol_mr_v2_faster_entry": {
+        "atr_period": 14,
+        "bb_period": 20,
+        "bb_std": 2.0,
+        "rsi_period": 14,
+        "rsi_oversold": 32,
+        "reclaim_ema": 20,
+        "reclaim_confirm_atr": 0.0,
+        "adx_period_4h": 14,
+        "adx_cap_4h": 34,
+        "atr_pct_low": 0.004,
+        "atr_pct_high": 0.05,
+        "require_break_prev_high": False,
+        "require_bullish": False,
+        "reclaim_mode": "any",
+        "oversold_lookback": 4,
+        "use_mean_targets": False,
+        "mean_target": "bb_mid",
+        "second_target": "bb_upper",
+        "time_stop_bars": 0,
+    },
+    "sol_mr_v3_mean_target_exit": {
+        "atr_period": 14,
+        "bb_period": 20,
+        "bb_std": 2.0,
+        "rsi_period": 14,
+        "rsi_oversold": 32,
+        "reclaim_ema": 20,
+        "reclaim_confirm_atr": 0.0,
+        "adx_period_4h": 14,
+        "adx_cap_4h": 34,
+        "atr_pct_low": 0.004,
+        "atr_pct_high": 0.05,
+        "require_break_prev_high": False,
+        "require_bullish": False,
+        "reclaim_mode": "any",
+        "oversold_lookback": 4,
+        "use_mean_targets": True,
+        "mean_target": "bb_mid",
+        "second_target": "bb_upper",
+        "time_stop_bars": 10,
+    },
+}
+
 STRATEGY_PROFILES = {
     "v6_relaxed": {
         **COMMON_V6,
@@ -72,12 +138,74 @@ BACKTEST_COMMON = {
     "partial_take_frac": 0.0,
 }
 
+SOL_BACKTEST_PROFILES = {
+    "sol_mean_rev_v1": {
+        "leverage": 3.0,
+        "max_pos": 1.2,
+        "risk_per_trade": 0.015,
+        "cooldown_bars": 2,
+        "stop_atr": 1.2,
+        "take_R": 1.8,
+        "trail_start_R": 0.8,
+        "trail_atr": 1.6,
+        "partial_take_R": 1.0,
+        "partial_take_frac": 0.5,
+        "break_even_after_partial": True,
+        "break_even_R": 0.8,
+        "use_trailing": True,
+        "use_signal_exit_targets": False,
+        "max_hold_bars": 0,
+    },
+    "sol_mr_v2_faster_entry": {
+        "leverage": 3.0,
+        "max_pos": 1.2,
+        "risk_per_trade": 0.015,
+        "cooldown_bars": 1,
+        "stop_atr": 1.2,
+        "take_R": 1.6,
+        "trail_start_R": 0.7,
+        "trail_atr": 1.5,
+        "partial_take_R": 0.9,
+        "partial_take_frac": 0.4,
+        "break_even_after_partial": True,
+        "break_even_R": 0.7,
+        "use_trailing": True,
+        "use_signal_exit_targets": False,
+        "max_hold_bars": 0,
+    },
+    "sol_mr_v3_mean_target_exit": {
+        "leverage": 3.0,
+        "max_pos": 1.2,
+        "risk_per_trade": 0.015,
+        "cooldown_bars": 1,
+        "stop_atr": 1.2,
+        "take_R": 4.0,
+        "trail_start_R": 9.0,
+        "trail_atr": 3.0,
+        "partial_take_R": 0.0,
+        "partial_take_frac": 0.0,
+        "break_even_after_partial": False,
+        "break_even_R": 0.0,
+        "use_trailing": False,
+        "use_signal_exit_targets": True,
+        "max_hold_bars": 10,
+    },
+}
+
 
 def get_strategy_profile(name: str):
-    if name not in STRATEGY_PROFILES:
-        raise KeyError(f"Unknown strategy profile: {name}")
-    return deepcopy(STRATEGY_PROFILES[name])
+    if name in STRATEGY_PROFILES:
+        return deepcopy(STRATEGY_PROFILES[name])
+    if name in SOL_MEAN_REVERSION_PROFILES:
+        return deepcopy(SOL_MEAN_REVERSION_PROFILES[name])
+    raise KeyError(f"Unknown strategy profile: {name}")
+
+
+def get_sol_backtest_profile(name: str):
+    if name not in SOL_BACKTEST_PROFILES:
+        raise KeyError(f"Unknown SOL backtest profile: {name}")
+    return deepcopy(SOL_BACKTEST_PROFILES[name])
 
 
 def list_profiles():
-    return list(STRATEGY_PROFILES.keys())
+    return list(STRATEGY_PROFILES.keys()) + list(SOL_MEAN_REVERSION_PROFILES.keys())

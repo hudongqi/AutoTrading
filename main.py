@@ -7,8 +7,8 @@ import numpy as np
 
 from config import *
 from data import CCXTDataSource
-from strategy import BTCPerpPullbackStrategy1H
-from strategy_profiles import get_strategy_profile, list_profiles, BACKTEST_COMMON
+from strategy import BTCPerpPullbackStrategy1H, SOLMeanReversionStrategy1H
+from strategy_profiles import get_strategy_profile, get_sol_backtest_profile, list_profiles, BACKTEST_COMMON
 from exit_profiles import get_exit_profile, list_exit_profiles
 from portfolio import PerpPortfolio
 from broker import SimBroker
@@ -87,7 +87,7 @@ def run_case(name: str, df_sig, strat, research_overlay=None, show_result_tail=T
         take_R=cfg["take_R"],
         trail_start_R=cfg["trail_start_R"],
         trail_atr=cfg["trail_atr"],
-        use_trailing=True,
+        use_trailing=cfg.get("use_trailing", True),
         check_liq=True,
         entry_is_maker=cfg["entry_is_maker"],
         funding_rate_per_8h=FUNDING_RATE_PER_8H,
@@ -96,8 +96,10 @@ def run_case(name: str, df_sig, strat, research_overlay=None, show_result_tail=T
         allow_reentry=cfg["allow_reentry"],
         partial_take_R=cfg["partial_take_R"],
         partial_take_frac=cfg["partial_take_frac"],
-        break_even_after_partial=cfg["break_even_after_partial"],
-        break_even_R=cfg["break_even_R"],
+        break_even_after_partial=cfg.get("break_even_after_partial", False),
+        break_even_R=cfg.get("break_even_R", 0.0),
+        use_signal_exit_targets=cfg.get("use_signal_exit_targets", False),
+        max_hold_bars=cfg.get("max_hold_bars", 0),
     )
 
     result = bt.run(df_sig)
@@ -160,7 +162,17 @@ def run_case(name: str, df_sig, strat, research_overlay=None, show_result_tail=T
 
 
 def build_strategy(profile_name: str):
-    return BTCPerpPullbackStrategy1H(**get_strategy_profile(profile_name))
+    cfg = get_strategy_profile(profile_name)
+    if profile_name.startswith("sol_"):
+        return SOLMeanReversionStrategy1H(**cfg)
+    return BTCPerpPullbackStrategy1H(**cfg)
+
+
+def resolve_market(profile_name: str, symbol: str | None, start: str | None, end: str | None):
+    resolved_symbol = symbol or ("SOL/USDT:USDT" if profile_name.startswith("sol_") else SYMBOL)
+    resolved_start = start or START
+    resolved_end = end or END
+    return resolved_symbol, resolved_start, resolved_end
 
 
 def main():
@@ -170,24 +182,42 @@ def main():
     parser.add_argument("--leverage", type=float, default=3.0)
     parser.add_argument("--max-pos", type=float, default=1.2)
     parser.add_argument("--risk-per-trade", type=float, default=0.015)
+    parser.add_argument("--symbol", default=None)
+    parser.add_argument("--start", default=None)
+    parser.add_argument("--end", default=None)
     args = parser.parse_args()
 
+    resolved_symbol, resolved_start, resolved_end = resolve_market(args.profile, args.symbol, args.start, args.end)
     ds = CCXTDataSource()
-    df = ds.load_ohlcv(SYMBOL, START, END)
+    df = ds.load_ohlcv(resolved_symbol, resolved_start, resolved_end)
     overlay = load_research_overlay("event_signals.json")
 
     strat = build_strategy(args.profile)
     df_sig = strat.generate_signals(df)
+    extra_cfg = {}
+    if args.profile.startswith("sol_"):
+        extra_cfg = get_sol_backtest_profile(args.profile)
+        extra_cfg.update({
+            "leverage": args.leverage,
+            "max_pos": args.max_pos,
+            "risk_per_trade": args.risk_per_trade,
+        })
+
+    run_params = {
+        "leverage": args.leverage,
+        "max_pos": args.max_pos,
+        "risk_per_trade": args.risk_per_trade,
+    }
+    run_params.update(extra_cfg)
+
     run_case(
-        f"LIVE_LIKE_{args.profile}_{args.exit_profile}",
+        f"LIVE_LIKE_{args.profile}_{args.exit_profile}_{resolved_symbol}",
         df_sig,
         strat,
         show_result_tail=True,
         research_overlay=overlay,
         exit_profile=args.exit_profile,
-        leverage=args.leverage,
-        max_pos=args.max_pos,
-        risk_per_trade=args.risk_per_trade,
+        **run_params,
     )
 
 

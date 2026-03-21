@@ -377,3 +377,148 @@ class BTCPerpPullbackStrategy1H:
 
         need_cols = ["atr", "resistance_7d", "support_7d", "ma_fast_4h", "ma_slow_4h", "adx_4h", "trend_strength_4h"]
         return out.dropna(subset=[c for c in need_cols if c in out.columns])
+
+
+class SOLMeanReversionStrategy1H:
+    """
+    SOL mean reversion 主线：long-only，先验证 gross edge。
+    方向：更早参与过度下杀后的回归，并支持 mean-target exit / time stop。
+    """
+
+    def __init__(
+        self,
+        atr_period=14,
+        bb_period=20,
+        bb_std=2.0,
+        rsi_period=14,
+        rsi_oversold=30,
+        reclaim_ema=20,
+        reclaim_confirm_atr=0.05,
+        adx_period_4h=14,
+        adx_cap_4h=32,
+        atr_pct_low=0.004,
+        atr_pct_high=0.05,
+        require_break_prev_high=True,
+        require_bullish=True,
+        reclaim_mode="ema",
+        oversold_lookback=3,
+        use_mean_targets=False,
+        mean_target="bb_mid",
+        second_target="bb_upper",
+        time_stop_bars=0,
+    ):
+        self.atr_period = atr_period
+        self.bb_period = bb_period
+        self.bb_std = bb_std
+        self.rsi_period = rsi_period
+        self.rsi_oversold = rsi_oversold
+        self.reclaim_ema = reclaim_ema
+        self.reclaim_confirm_atr = reclaim_confirm_atr
+        self.adx_period_4h = adx_period_4h
+        self.adx_cap_4h = adx_cap_4h
+        self.atr_pct_low = atr_pct_low
+        self.atr_pct_high = atr_pct_high
+        self.require_break_prev_high = require_break_prev_high
+        self.require_bullish = require_bullish
+        self.reclaim_mode = reclaim_mode
+        self.oversold_lookback = oversold_lookback
+        self.use_mean_targets = use_mean_targets
+        self.mean_target = mean_target
+        self.second_target = second_target
+        self.time_stop_bars = time_stop_bars
+
+    @staticmethod
+    def _atr(df, period=14):
+        high, low, close = df["high"], df["low"], df["close"]
+        prev_close = close.shift(1)
+        tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
+        return tr.ewm(alpha=1 / period, adjust=False).mean()
+
+    @staticmethod
+    def _rsi(close, period=14):
+        delta = close.diff()
+        up = delta.clip(lower=0)
+        down = -delta.clip(upper=0)
+        ma_up = up.ewm(alpha=1 / period, adjust=False).mean()
+        ma_down = down.ewm(alpha=1 / period, adjust=False).mean()
+        rs = ma_up / ma_down.replace(0, np.nan)
+        return 100 - 100 / (1 + rs)
+
+    @staticmethod
+    def _adx(df, period=14):
+        high, low, close = df["high"], df["low"], df["close"]
+        up_move = high.diff(); down_move = -low.diff()
+        plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+        minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+        prev_close = close.shift(1)
+        tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
+        atr = tr.ewm(alpha=1 / period, adjust=False).mean()
+        plus_di = 100 * pd.Series(plus_dm, index=df.index).ewm(alpha=1 / period, adjust=False).mean() / atr
+        minus_di = 100 * pd.Series(minus_dm, index=df.index).ewm(alpha=1 / period, adjust=False).mean() / atr
+        dx = ((plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)) * 100
+        return dx.ewm(alpha=1 / period, adjust=False).mean()
+
+    def generate_signals(self, df):
+        out = df.copy()
+        out["atr"] = self._atr(out, self.atr_period)
+        out["atr_pct"] = out["atr"] / out["close"]
+        out["volatility"] = out["atr_pct"]
+        out["ema20"] = out["close"].ewm(span=self.reclaim_ema, adjust=False).mean()
+        out["rsi"] = self._rsi(out["close"], self.rsi_period)
+        out["bb_mid"] = out["close"].rolling(self.bb_period).mean()
+        out["bb_sigma"] = out["close"].rolling(self.bb_period).std()
+        out["bb_lower"] = out["bb_mid"] - self.bb_std * out["bb_sigma"]
+        out["bb_upper"] = out["bb_mid"] + self.bb_std * out["bb_sigma"]
+
+        out_4h = out[["open", "high", "low", "close", "volume"]].resample("4h").agg({
+            "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
+        }).dropna()
+        out_4h["adx_4h"] = self._adx(out_4h, self.adx_period_4h)
+        out["adx_4h"] = out_4h["adx_4h"].reindex(out.index, method="ffill")
+
+        regime_ok = (
+            (out["adx_4h"] <= self.adx_cap_4h) &
+            (out["atr_pct"] >= self.atr_pct_low) &
+            (out["atr_pct"] <= self.atr_pct_high)
+        )
+
+        oversold = (out["close"] < out["bb_lower"]) & (out["rsi"] <= self.rsi_oversold)
+        reclaim_ema = out["close"] >= (out["ema20"] + self.reclaim_confirm_atr * out["atr"])
+        reclaim_bb = out["close"] >= out["bb_lower"]
+        reclaim_prev_close = out["close"] > out["close"].shift(1)
+        if self.reclaim_mode == "bb_in":
+            reclaim = reclaim_bb
+        elif self.reclaim_mode == "prev_close":
+            reclaim = reclaim_prev_close
+        elif self.reclaim_mode == "any":
+            reclaim = reclaim_ema | reclaim_bb | reclaim_prev_close
+        else:
+            reclaim = reclaim_ema
+
+        bullish = (out["close"] > out["open"]) if self.require_bullish else pd.Series(True, index=out.index)
+        break_prev_high = (out["close"] > out["high"].shift(1)) if self.require_break_prev_high else pd.Series(True, index=out.index)
+        recent_oversold = oversold.shift(1).rolling(self.oversold_lookback).max().fillna(0).astype(bool)
+
+        out["state_signal"] = np.where(regime_ok, 1, 0)
+        out["entry_setup"] = np.where(recent_oversold & reclaim & bullish & break_prev_high & regime_ok, 1, 0)
+        out["signal"] = out["state_signal"]
+        out["trade_signal"] = out["entry_setup"]
+        out["entry_reason"] = np.where(out["entry_setup"] == 1, "sol_mean_reversion_reclaim", "none")
+        out["resistance_7d"] = out["high"].rolling(24 * 7, min_periods=24 * 7).max()
+        out["support_7d"] = out["low"].rolling(24 * 7, min_periods=24 * 7).min()
+        out["zscore"] = (out["close"] - out["bb_mid"]) / out["bb_sigma"].replace(0, np.nan)
+
+        if self.use_mean_targets:
+            out["take_price_signal_long"] = np.where(self.mean_target == "ema20", out["ema20"], out["bb_mid"])
+            if self.second_target == "zscore0":
+                out["take_price_signal2_long"] = out["bb_mid"]
+            elif self.second_target == "ema20":
+                out["take_price_signal2_long"] = out["ema20"]
+            else:
+                out["take_price_signal2_long"] = out["bb_upper"]
+        else:
+            out["take_price_signal_long"] = np.nan
+            out["take_price_signal2_long"] = np.nan
+
+        need_cols = ["atr", "ema20", "bb_lower", "adx_4h"]
+        return out.dropna(subset=[c for c in need_cols if c in out.columns])
