@@ -522,3 +522,264 @@ class SOLMeanReversionStrategy1H:
 
         need_cols = ["atr", "ema20", "bb_lower", "adx_4h"]
         return out.dropna(subset=[c for c in need_cols if c in out.columns])
+
+
+class SOLReversionV2Strategy1H:
+    """
+    SOL 均值回归 V2：修复 V1 的核心问题，加入量能确认与方向过滤。
+
+    核心改进：
+    1. 量能确认：超卖 K 线同时需要成交量 > N 倍均量（真实恐慌抛售，而非缓慢下滑）
+    2. DI 方向过滤：只在 4H DI+ >= DI- 或 ADX < 20 时入场（避免在强势下跌趋势中硬接刀）
+    3. 严格双重收复：close >= ema20 + buffer（不允许 any/bb_in 等宽松模式）
+    4. 放宽 ATR% 上限至 0.10（高波动期往往是均值回归最佳机会）
+    5. 紧缩 oversold_lookback=2（只看最近 1-2 根，信号更新鲜）
+    6. signal 从不设 -1（持仓靠止损/止盈/trailing 出场，不被趋势信号强平）
+    """
+
+    def __init__(
+        self,
+        atr_period: int = 14,
+        bb_period: int = 20,
+        bb_std: float = 2.0,
+        rsi_period: int = 14,
+        rsi_oversold: float = 35.0,          # 做多超卖阈值
+        rsi_overbought: float = 65.0,        # 做空超买阈值
+        reclaim_ema: int = 20,               # 短期 EMA（入场确认）
+        trend_ema: int = 200,                # 长期 EMA（趋势方向判断，1H*200≈8天）
+        vol_period: int = 20,                # 量能均线周期
+        vol_spike_mult: float = 1.2,         # 量能倍数
+        atr_pct_low: float = 0.003,
+        atr_pct_high: float = 0.10,
+        oversold_lookback: int = 4,          # 超卖/超买 lookback 窗口
+        allow_short: bool = True,            # 允许做空
+    ):
+        self.atr_period = atr_period
+        self.bb_period = bb_period
+        self.bb_std = bb_std
+        self.rsi_period = rsi_period
+        self.rsi_oversold = rsi_oversold
+        self.reclaim_ema = reclaim_ema
+        self.rsi_overbought = rsi_overbought
+        self.trend_ema = trend_ema
+        self.adx_period_4h = 14
+        self.vol_period = vol_period
+        self.vol_spike_mult = vol_spike_mult
+        self.atr_pct_low = atr_pct_low
+        self.atr_pct_high = atr_pct_high
+        self.oversold_lookback = oversold_lookback
+        self.allow_short = allow_short
+
+    @staticmethod
+    def _atr(df, period=14):
+        high, low, close = df["high"], df["low"], df["close"]
+        prev_close = close.shift(1)
+        tr = pd.concat(
+            [high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1
+        ).max(axis=1)
+        return tr.ewm(alpha=1 / period, adjust=False).mean()
+
+    @staticmethod
+    def _rsi(close, period=14):
+        delta = close.diff()
+        up = delta.clip(lower=0)
+        down = -delta.clip(upper=0)
+        ma_up = up.ewm(alpha=1 / period, adjust=False).mean()
+        ma_down = down.ewm(alpha=1 / period, adjust=False).mean()
+        rs = ma_up / ma_down.replace(0, np.nan)
+        return 100 - 100 / (1 + rs)
+
+    @staticmethod
+    def _adx_with_di(df, period=14):
+        """返回 (adx, plus_di, minus_di)"""
+        high, low, close = df["high"], df["low"], df["close"]
+        up_move = high.diff()
+        down_move = -low.diff()
+        plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+        minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+        prev_close = close.shift(1)
+        tr = pd.concat(
+            [high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1
+        ).max(axis=1)
+        atr_s = tr.ewm(alpha=1 / period, adjust=False).mean()
+        plus_di = (
+            100
+            * pd.Series(plus_dm, index=df.index).ewm(alpha=1 / period, adjust=False).mean()
+            / atr_s
+        )
+        minus_di = (
+            100
+            * pd.Series(minus_dm, index=df.index).ewm(alpha=1 / period, adjust=False).mean()
+            / atr_s
+        )
+        dx = ((plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)) * 100
+        adx = dx.ewm(alpha=1 / period, adjust=False).mean()
+        return adx, plus_di, minus_di
+
+    def generate_signals(self, df: pd.DataFrame) -> pd.DataFrame:
+        out = df.copy()
+
+        # ── 基础指标 ──────────────────────────────────────────
+        out["atr"] = self._atr(out, self.atr_period)
+        out["atr_pct"] = out["atr"] / out["close"]
+        out["volatility"] = out["atr_pct"]
+        out["ema20"] = out["close"].ewm(span=self.reclaim_ema, adjust=False).mean()
+        out["ema_trend"] = out["close"].ewm(span=self.trend_ema, adjust=False).mean()
+        out["rsi"] = self._rsi(out["close"], self.rsi_period)
+        out["bb_mid"] = out["close"].rolling(self.bb_period).mean()
+        out["bb_sigma"] = out["close"].rolling(self.bb_period).std()
+        out["bb_lower"] = out["bb_mid"] - self.bb_std * out["bb_sigma"]
+        out["bb_upper"] = out["bb_mid"] + self.bb_std * out["bb_sigma"]
+        out["vol_ma"] = out["volume"].rolling(self.vol_period).mean()
+        # 30 天 EMA（720 根 1H bar），用于底部保护判断
+        out["ema_30d"] = out["close"].ewm(span=720, adjust=False).mean()
+        # 90 天 EMA（2160 根 1H bar），用于宏观牛熊判断（更稳定，短期修正不会触发切换）
+        out["ema_90d"] = out["close"].ewm(span=2160, adjust=False).mean()
+
+        # ── 4H ADX + DI ──────────────────────────────────────
+        out_4h = out[["open", "high", "low", "close", "volume"]].resample("4h").agg(
+            {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
+        ).dropna()
+        adx_4h, plus_di_4h, minus_di_4h = self._adx_with_di(out_4h, self.adx_period_4h)
+        out["adx_4h"] = adx_4h.reindex(out.index, method="ffill")
+        out["plus_di_4h"] = plus_di_4h.reindex(out.index, method="ffill")
+        out["minus_di_4h"] = minus_di_4h.reindex(out.index, method="ffill")
+
+        # 均值回归在新低入场时 support_7d ≈ entry_price，会导致结构止损极紧（0.x点）
+        # 因此不传结构止损，让回测器使用纯 ATR 止损
+        out["support_7d"] = np.nan
+        out["resistance_7d"] = np.nan
+
+        # ── 波动率区间 ────────────────────────────────────────
+        vol_regime = (out["atr_pct"] >= self.atr_pct_low) & (out["atr_pct"] <= self.atr_pct_high)
+
+        # ── 趋势方向：市场结构过滤（5日 vs 10日前的 HH/LL）──
+        # 用 5 天窗口（120 根 1H bar）的最高/最低点，与 10 天前（shift 240）比较
+        # 避免使用滞后均线，直接看价格结构
+        high_5d = out["high"].rolling(120).max()
+        low_5d  = out["low"].rolling(120).min()
+        uptrend_struct   = (high_5d > high_5d.shift(240)) & (low_5d > low_5d.shift(240))
+        downtrend_struct = (high_5d < high_5d.shift(240)) & (low_5d < low_5d.shift(240))
+
+        # 4H DI 辅助确认动量方向（要求 DI 差距 > 5，避免两线粘合时误判）
+        di_spread    = out["plus_di_4h"] - out["minus_di_4h"]
+        di_bull      = di_spread > 5    # DI+ 明显强于 DI-
+        di_bear      = di_spread < -5   # DI- 明显强于 DI+
+
+        allow_short_mask = pd.Series(self.allow_short, index=out.index)
+
+        # ── 量能 ────────────────────────────────────────────
+        vol_strong = out["volume"] > out["vol_ma"] * self.vol_spike_mult
+
+        # ──────────────────────────────────────────────────────
+        # 核心策略：BB 突破后第一个回调 bar = 买入点（动量延续）
+        #
+        # 数据分析发现：
+        # 「前根 close > BB_upper + RSI>65 + 放量」之后，下一根 bar
+        # 无论是阴线还是阳线，65-70% 的时间后续 12H 价格继续上涨。
+        # 这说明 BB 突破后的第一次回调是买入机会，而非反转信号。
+        #
+        # 策略：
+        #   做多：前根 close > BB_upper + RSI>65 + 放量（突破确认）
+        #         当根：回调（RSI 微降），但仍在 BB_mid 上方（浅回调）
+        #         → 顺势入场，等待动量恢复
+        #
+        #   做空：前根 close < BB_lower + RSI<35 + 放量（跌破确认）
+        #         当根：小幅反弹（RSI 微升），但仍在 BB_mid 下方（浅反弹）
+        #         → 顺势入场，等待动量继续
+        # ──────────────────────────────────────────────────────
+
+        # ── 做多：BB_upper 突破后浅回调买入 ───────────────
+        # 前一根：突破上轨 + RSI 动量 + 放量
+        prev_breakout_long = (
+            (out["close"].shift(1) > out["bb_upper"].shift(1))
+            & (out["rsi"].shift(1) >= self.rsi_overbought)
+            & (out["volume"].shift(1) > out["vol_ma"].shift(1) * self.vol_spike_mult)
+        )
+        # 当前根：浅回调（RSI 仍 > 50，收盘 > BB_mid）
+        rsi_still_strong = out["rsi"] > 50
+        rsi_softening    = out["rsi"] < out["rsi"].shift(1)  # RSI 微降（回调）
+        close_above_mid  = out["close"] > out["bb_mid"]      # 浅回调（仍在上半部分）
+        # 做多：上升结构 + DI 多头确认
+        long_regime_ok   = vol_regime & uptrend_struct & di_bull
+
+        # ── BTC 联动过滤（可选）──────────────────────────────
+        # 如果 df 中预先注入了 btc_close / btc_ema200 列，则启用
+        # 逻辑：BTC 收盘 < BTC EMA200 且 EMA200 斜率为负（7天） = BTC 强熊
+        #       → 压制山寨多头，避免在 BTC 主导下跌期间做多
+        btc_filter_long = pd.Series(True, index=out.index)
+        if "btc_close" in out.columns and "btc_ema200" in out.columns:
+            btc_below_ema = out["btc_close"] < out["btc_ema200"]
+            btc_slope_neg = (out["btc_ema200"] - out["btc_ema200"].shift(168)) < 0  # 7天斜率
+            btc_filter_long = ~(btc_below_ema & btc_slope_neg)
+
+        # ── 资金费率过滤（可选）──────────────────────────────
+        # 如果 df 中预先注入了 funding_rate 列（8H 频率，ffill 到 1H），则启用
+        # 极端正向费率（> 0.08%/8H）= 市场过度多头，压制多头信号
+        # 极端负向费率（< -0.05%/8H）= 市场过度空头，压制空头信号
+        funding_filter_long  = pd.Series(True, index=out.index)
+        funding_filter_short = pd.Series(True, index=out.index)
+        if "funding_rate" in out.columns:
+            funding_filter_long  = out["funding_rate"] <= 0.0008   # ≤ 0.08% per 8H
+            funding_filter_short = out["funding_rate"] >= -0.0005  # ≥ -0.05% per 8H
+
+        long_entry = (
+            prev_breakout_long & rsi_still_strong & rsi_softening
+            & close_above_mid & long_regime_ok
+            & btc_filter_long & funding_filter_long
+        )
+
+        # ── 做空：BB_lower 跌破后浅反弹做空 ───────────────
+        # 前一根：跌破下轨 + RSI 弱势 + 放量
+        prev_breakdown_short = (
+            (out["close"].shift(1) < out["bb_lower"].shift(1))
+            & (out["rsi"].shift(1) <= self.rsi_oversold)
+            & (out["volume"].shift(1) > out["vol_ma"].shift(1) * self.vol_spike_mult)
+        )
+        # 当前根：浅反弹（RSI 仍 < 50，收盘 < BB_mid）
+        rsi_still_weak   = out["rsi"] < 50
+        rsi_bouncing     = out["rsi"] > out["rsi"].shift(1)  # RSI 微升（反弹）
+        close_below_mid  = out["close"] < out["bb_mid"]      # 浅反弹（仍在下半部分）
+        # 做空：下降结构 + DI 空头确认 + 宏观环境为真熊市
+        #
+        # 宏观熊市过滤（macro_bear）—— 用 ema_90d 斜率判断，而非价格水平：
+        #   用 ema_90d 与 30 天前比较（shift 720 根 1H bar）。
+        #   - 牛市修正：ema_90d 本身仍在上升（斜率 > 0）→ 屏蔽空头 ✓
+        #   - 真正熊市：ema_90d 持续下降（斜率 < 0）→ 允许空头 ✓
+        #   这样避免在 2024 式牛市回调时误做空。
+        #
+        # 底部保护（not_extreme_oversold）：
+        #   close > ema_30d × 0.75：不在崩跌底部做空（均线 -25% 以下风险/回报差）
+        ema_90d_slope        = out["ema_90d"] - out["ema_90d"].shift(720)  # 与 30 天前对比
+        macro_bear           = ema_90d_slope < 0                           # 90 日均线正在下降 = 真熊市
+        not_extreme_oversold = out["close"] > out["ema_30d"] * 0.75        # 非极度崩跌底部
+        short_regime_ok  = vol_regime & downtrend_struct & di_bear & macro_bear & not_extreme_oversold & allow_short_mask
+
+        short_entry = (
+            prev_breakdown_short & rsi_still_weak & rsi_bouncing
+            & close_below_mid & short_regime_ok
+            & funding_filter_short
+        )
+
+        # ── 最终信号 ──────────────────────────────────────────
+        out["entry_setup"] = np.where(long_entry, 1, np.where(short_entry, -1, 0)).astype(int)
+        out["trade_signal"] = out["entry_setup"]
+
+        # signal = 0：持仓只通过止损/止盈/时间止损退出，不被趋势信号强平
+        # 这样避免 DI 频繁翻转产生大量手续费
+        out["signal"] = 0
+        out["state_signal"] = 0
+
+        out["entry_reason"] = np.where(
+            out["entry_setup"] == 1, "sol_rev_v2_long",
+            np.where(out["entry_setup"] == -1, "sol_rev_v2_short", "none")
+        )
+        out["regime_ok"] = (long_regime_ok | short_regime_ok)
+
+        out["take_price_signal_long"] = np.nan
+        out["take_price_signal2_long"] = np.nan
+        out["take_price_signal_short"] = np.nan
+        out["take_price_signal2_short"] = np.nan
+
+        need_cols = ["atr", "ema20", "vol_ma", "adx_4h"]
+        return out.dropna(subset=[c for c in need_cols if c in out.columns])

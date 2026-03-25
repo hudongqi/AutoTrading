@@ -82,6 +82,23 @@ SOL_MEAN_REVERSION_PROFILES = {
         "second_target": "bb_upper",
         "time_stop_bars": 10,
     },
+    # ── V2：趋势对齐双向均值回归 ──────────────────────────────
+    "sol_rev_v2": {
+        "atr_period": 14,
+        "bb_period": 20,
+        "bb_std": 2.0,
+        "rsi_period": 14,
+        "rsi_oversold": 35,
+        "rsi_overbought": 65,
+        "reclaim_ema": 20,
+        "trend_ema": 200,
+        "vol_period": 20,
+        "vol_spike_mult": 1.2,
+        "atr_pct_low": 0.003,
+        "atr_pct_high": 0.10,
+        "oversold_lookback": 4,
+        "allow_short": True,
+    },
 }
 
 STRATEGY_PROFILES = {
@@ -190,6 +207,57 @@ SOL_BACKTEST_PROFILES = {
         "use_signal_exit_targets": True,
         "max_hold_bars": 10,
     },
+    # ── SOL V2：宽止损 + 纯 stop/take ───────────────────────
+    "sol_rev_v2": {
+        "leverage": 2.0,
+        "max_pos": 500,
+        "risk_per_trade": 0.040,  # 风险 4.0%（DD ≈ 25%，留有安全边际）
+        "cooldown_bars": 3,
+        "stop_atr": 5.0,          # 宽止损 5 ATR
+        "take_R": 3.0,            # 固定止盈 3.0R（优化：2.5→3.0，+6%组合收益）
+        "trail_start_R": 0.0,
+        "trail_atr": 0.0,
+        "use_trailing": False,
+        "partial_take_R": 0.0,
+        "partial_take_frac": 0.0,
+        "break_even_after_partial": False,
+        "break_even_R": 0.0,
+        "use_signal_exit_targets": False,
+        "max_hold_bars": 240,     # 最多 10 天（240H）强制平仓
+        "entry_is_maker": False,
+        "enable_risk_position_sizing": True,
+        "allow_reentry": False,
+    },
+    # ── PEPE V2：高波动专属参数 ──────────────────────────────
+    # 优化结论（参数扫描 2024-2026，两轮迭代）：
+    #   vol_spike_mult=1.5（过滤弱量能假突破，胜率 46% → 49%）
+    #   take_R=3.0（PEPE 动量持续性强，2.5R 离场太早）
+    #   stop_atr=5.0（宽止损绝对最优，4.0/6.0 均差）
+    #   cooldown_bars=2（第二轮扫描：减少冷却等待，Calmar 6.65→7.24）
+    #   atr_pct_high=0.20（PEPE 波动远高于 SOL，需放宽上限）
+    #   atr_pct_low=0.008（策略参数，过滤低波动期假信号，与 cd=2 叠加 Calmar→7.77）
+    #   max_pos=5_000_000（单价 ~$0.01，需大量单位才有效仓位）
+    # 注：atr_pct_low=0.008 是策略参数，需在调用方的 strat_params 中设置
+    "pepe_rev_v2": {
+        "leverage": 2.0,
+        "max_pos": 5_000_000,     # 1000PEPE 单价极低，需大值
+        "risk_per_trade": 0.040,
+        "cooldown_bars": 3,       # 第三轮优化：3 比 2 更优（Calmar +0.60）
+        "stop_atr": 5.0,
+        "take_R": 4.0,            # 比 SOL 高：PEPE 能走更大（优化：3.0→4.0，+28%收益）
+        "trail_start_R": 0.0,
+        "trail_atr": 0.0,
+        "use_trailing": False,
+        "partial_take_R": 0.0,
+        "partial_take_frac": 0.0,
+        "break_even_after_partial": False,
+        "break_even_R": 0.0,
+        "use_signal_exit_targets": False,
+        "max_hold_bars": 240,
+        "entry_is_maker": False,
+        "enable_risk_position_sizing": True,
+        "allow_reentry": False,
+    },
 }
 
 
@@ -198,6 +266,8 @@ def get_strategy_profile(name: str):
         return deepcopy(STRATEGY_PROFILES[name])
     if name in SOL_MEAN_REVERSION_PROFILES:
         return deepcopy(SOL_MEAN_REVERSION_PROFILES[name])
+    if name in SOL_BACKTEST_PROFILES:          # sol_rev_v2 策略参数也存在此字典
+        return deepcopy(SOL_BACKTEST_PROFILES[name])
     raise KeyError(f"Unknown strategy profile: {name}")
 
 

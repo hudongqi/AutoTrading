@@ -38,6 +38,11 @@ class Backtester:
         pyramid_trigger_R: float = 1.0,
         pyramid_add_frac: float = 0.5,
         max_pyramids: int = 1,
+        dd_stop_pct: float = 0.0,      # 触发阈值：权益从高点回撤超过此比例 → 启动冷静期
+                                       # 0.0 = 禁用
+        dd_cooldown_bars: int = 0,     # 冷静期时长（bar 数）：触发后暂停新开仓 N 根 bar
+                                       # 0 = 使用旧版"权益恢复"逻辑（向后兼容）
+                                       # 建议：SOL=456（19天），PEPE=648（27天）
     ):
         self.broker = broker
         self.portfolio = portfolio
@@ -65,6 +70,8 @@ class Backtester:
         self.pyramid_trigger_R = float(pyramid_trigger_R)
         self.pyramid_add_frac = float(pyramid_add_frac)
         self.max_pyramids = int(max_pyramids)
+        self.dd_stop_pct          = float(dd_stop_pct)
+        self.dd_cooldown_bars     = int(dd_cooldown_bars)
 
         self.cur_stop = None
         self.cur_take = None
@@ -278,6 +285,10 @@ class Backtester:
     def run(self, df_signals: pd.DataFrame) -> pd.DataFrame:
         rows = []
         last_exit_idx = -999999
+        equity_peak   = self.portfolio.equity(
+            float(df_signals["close"].iloc[0]) if len(df_signals) else 0
+        )
+        dd_resume_bar = -1   # 冷静期结束的 bar 索引（i >= dd_resume_bar 才允许开仓）
 
         for i, (ts, row) in enumerate(df_signals.iterrows()):
             close = float(row["close"])
@@ -440,8 +451,27 @@ class Backtester:
                     last_exit_idx = i
                 current_pos = float(self.portfolio.state.position)
 
+            # ── 回撤止损：超过阈值则暂停新开仓（现有持仓不受影响）──
+            if self.dd_stop_pct > 0:
+                cur_eq = self.portfolio.equity(close)
+                equity_peak = max(equity_peak, cur_eq)
+                current_dd  = (cur_eq / equity_peak - 1)
+
+                if self.dd_cooldown_bars > 0:
+                    # ── 时间冷却模式（推荐）────────────────────────────
+                    # 触发时记录冷静期结束 bar，之后自动恢复，不依赖权益回升
+                    # 可多次触发：每次触发都从当前 bar 重新计算冷静期结束点
+                    if current_dd < -self.dd_stop_pct and i >= dd_resume_bar:
+                        dd_resume_bar = i + self.dd_cooldown_bars
+                    in_dd_stop = i < dd_resume_bar
+                else:
+                    # ── 旧版：权益恢复模式（向后兼容）───────────────────
+                    in_dd_stop = current_dd < -self.dd_stop_pct
+            else:
+                in_dd_stop = False
+
             can_reenter = self.allow_reentry or trade_sig != 0
-            if current_pos == 0 and (not in_cooldown) and can_reenter and entry_trigger != 0:
+            if current_pos == 0 and (not in_cooldown) and can_reenter and entry_trigger != 0 and not in_dd_stop:
                 side = 1 if entry_trigger > 0 else -1
                 res7 = float(row.get("resistance_7d", np.nan))
                 sup7 = float(row.get("support_7d", np.nan))
